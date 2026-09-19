@@ -302,7 +302,13 @@ ${
 
     if (url.pathname === "/nav.js") {
       res.writeHead(200, { "content-type": "application/javascript" });
-      return res.end(readFileSync(new URL("./nav.js", import.meta.url), "utf8"));
+      // The scanner ships ahead of the widget: one file for the host site, one
+      // definition of "interactive element" shared with the crawler.
+      return res.end(
+        readFileSync(new URL("./scan.js", import.meta.url), "utf8") +
+          "\n" +
+          readFileSync(new URL("./nav.js", import.meta.url), "utf8"),
+      );
     }
 
     if (url.pathname === "/guide" && req.method === "POST") {

@@ -9,35 +9,10 @@
   const API = (script?.dataset.api || new URL(script.src).origin).replace(/\/$/, "");
   const KEY = "wnav:state";
 
-  const SEL =
-    'a[href], button, summary, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="switch"], [role="checkbox"], input:not([type="hidden"]), select, textarea';
-
-  // ---------- finding things on the page ----------
-
-  const nameOf = (el) =>
-    (
-      el.getAttribute("aria-label") ||
-      el.getAttribute("title") ||
-      el.placeholder ||
-      el.innerText ||
-      el.getAttribute("alt") ||
-      el.value ||
-      ""
-    )
-      .replace(/\s+/g, " ")
-      .trim();
-
-  const isVisible = (el) => {
-    const r = el.getBoundingClientRect();
-    if (r.width < 2 || r.height < 2) return false;
-    const s = getComputedStyle(el);
-    return s.visibility !== "hidden" && s.display !== "none" && s.opacity !== "0";
-  };
+  const S = window.__wnavScan;
 
   const candidates = () =>
-    Array.from(document.querySelectorAll(SEL)).filter(
-      (el) => isVisible(el) && !root.contains(el),
-    );
+    S.all().filter((el) => S.isVisible(el) && !root.contains(el) && !host.contains(el));
 
   /* Match by what the element says, never by a stored CSS path -- selectors break
    * on the next deploy, visible labels usually don't. */
@@ -46,7 +21,7 @@
     let best = null;
     let bestScore = 0;
     for (const el of candidates()) {
-      const have = nameOf(el).toLowerCase();
+      const have = S.nameOf(el).toLowerCase();
       if (!have) continue;
       let score = 0;
       if (have === want) score = 4;
@@ -54,7 +29,7 @@
       else if (have.includes(want)) score = 2;
       else if (want.includes(have) && have.length > 2) score = 1;
       if (!score) continue;
-      if (step.role && (el.getAttribute("role") || el.tagName.toLowerCase()) === step.role)
+      if (step.role && S.roleOf(el) === step.role)
         score += 0.5;
       const area = el.getBoundingClientRect().width * el.getBoundingClientRect().height;
       // Prefer the tightest element that matches: a wrapper inherits its children's
@@ -82,8 +57,8 @@
     candidates()
       .slice(0, 200)
       .map((el) => ({
-        label: nameOf(el).slice(0, 60),
-        role: el.getAttribute("role") || el.tagName.toLowerCase(),
+        label: S.nameOf(el).slice(0, 60),
+        role: S.roleOf(el),
       }))
       .filter((d) => d.label);
 

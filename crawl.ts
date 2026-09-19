@@ -1,11 +1,12 @@
 // Builds the site index: every interactive element, which page it lives on, and
 // which menu it hides behind. This is what lets a single query-time model call
 // answer "where is dark mode" without walking the user through the site first.
+import { readFileSync } from "node:fs";
 import { chromium, type Page } from "playwright";
 import { clearSite, putElements, type El } from "./db.ts";
 
-const INTERACTIVE =
-  'a[href], button, summary, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="switch"], [role="checkbox"], input:not([type="hidden"]), select, textarea';
+// Same scanner the widget uses, so index labels match what the widget looks for.
+const SCAN_SRC = readFileSync(new URL("./scan.js", import.meta.url), "utf8");
 
 // Opening a menu means clicking it. On a stranger's site that is not a free
 // action -- a click can submit a form, delete a row, or spend money. So we only
@@ -18,117 +19,171 @@ export type CrawlOpts = {
   maxPages?: number;
   storageState?: string; // Playwright auth state -- without it, logged-in pages are invisible
   headless?: boolean;
+  respectRobots?: boolean; // default true; only turn off for a site you own
 };
 
-/** Runs in the page. Returns one record per visible interactive element. */
-function extract(sel: string) {
-  const label = (el: Element): string => {
-    const a = el as HTMLElement;
-    const raw =
-      a.getAttribute("aria-label") ||
-      a.getAttribute("title") ||
-      (a as HTMLInputElement).placeholder ||
-      a.innerText ||
-      a.getAttribute("alt") ||
-      (a as HTMLInputElement).value ||
-      "";
-    return raw.replace(/\s+/g, " ").trim().slice(0, 60);
+/* Read robots.txt and honour it. Pointed at your own site this changes nothing,
+ * but the crawler opens a real browser and clicks things, and without this it
+ * will happily walk into /gp/cart and /ap/signin on someone else's domain. */
+async function robotsGate(origin: string): Promise<(path: string) => boolean> {
+  const rules: { allow: boolean; path: string; re: RegExp }[] = [];
+  try {
+    const res = await fetch(`${origin}/robots.txt`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return () => true; // no robots.txt means no restrictions
+    let applies = false;
+    for (const raw of (await res.text()).split(/\r?\n/)) {
+      const line = raw.split("#")[0].trim();
+      const i = line.indexOf(":");
+      if (i < 0) continue;
+      const key = line.slice(0, i).trim().toLowerCase();
+      const val = line.slice(i + 1).trim();
+      if (key === "user-agent") applies = val === "*";
+      else if (applies && (key === "allow" || key === "disallow") && val) {
+        const re = new RegExp(
+          "^" +
+            val
+              .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+              .replace(/\*/g, ".*")
+              .replace(/\\\$$/, "$"),
+        );
+        rules.push({ allow: key === "allow", path: val, re });
+      }
+    }
+  } catch {
+    return () => true; // unreachable robots.txt is not a licence, but it is not a crawl failure either
+  }
+  if (!rules.length) return () => true;
+
+  return (path: string) => {
+    // Most specific rule wins, and Allow beats Disallow at equal length.
+    let best: (typeof rules)[number] | null = null;
+    for (const r of rules) {
+      if (!r.re.test(path)) continue;
+      if (!best || r.path.length > best.path.length || (r.path.length === best.path.length && r.allow))
+        best = r;
+    }
+    return !best || best.allow;
   };
-  const visible = (el: Element) => {
-    const r = el.getBoundingClientRect();
-    if (r.width < 2 || r.height < 2) return false;
-    const s = getComputedStyle(el);
-    return s.visibility !== "hidden" && s.display !== "none" && s.opacity !== "0";
-  };
+}
+
+/** Runs in the page, using the injected shared scanner. */
+function extract() {
+  const S = (window as any).__wnavScan;
   const out: { label: string; role: string }[] = [];
-  for (const el of Array.from(document.querySelectorAll(sel))) {
-    if (!visible(el)) continue;
-    const l = label(el);
-    if (!l) continue;
-    out.push({
-      label: l,
-      role: el.getAttribute("role") || el.tagName.toLowerCase(),
-    });
+  for (const el of S.all()) {
+    if (!S.isVisible(el)) continue;
+    const label = S.nameOf(el);
+    if (!label) continue;
+    out.push({ label, role: S.roleOf(el) });
   }
   return out;
 }
 
 async function snapshot(page: Page) {
-  return page.evaluate(extract, INTERACTIVE);
+  return page.evaluate(extract);
 }
 
 async function crawlPage(page: Page, url: string, origin: string) {
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(400); // let client-side rendering land
+  /* Wait for something to actually be laid out, not a fixed delay. A heavy site
+   * has its markup at domcontentloaded but no geometry yet, so every element
+   * measures 0x0 and the visibility filter throws the whole page away -- which is
+   * how amazon.com indexed as zero elements. */
+  await page
+    .waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('a[href], button, input, [role="button"]')).some(
+          (el) => {
+            const r = el.getBoundingClientRect();
+            return r.width > 2 && r.height > 2;
+          },
+        ),
+      null,
+      { timeout: 8000 },
+    )
+    .catch(() => {}); // a page with genuinely nothing on it is not an error
+  await page.waitForTimeout(300); // let the rest of the fold settle
 
   const path = new URL(page.url()).pathname;
   const base = await snapshot(page);
   const els: El[] = base.map((e) => ({ ...e, page: path, parent: "" }));
 
-  const links = await page.evaluate(
-    () =>
-      Array.from(document.querySelectorAll("a[href]")).map(
-        (a) => (a as HTMLAnchorElement).href,
-      ),
+  const links = await page.evaluate(() =>
+    Array.from(document.querySelectorAll("a[href]")).map((a) => (a as HTMLAnchorElement).href),
   );
 
-  // Depth 1: open each disclosure, record what appears inside it.
-  // ponytail: one level deep. Nested submenus need a recursive pass -- add it
-  // when a real site's target actually sits two menus down.
-  const seen = new Set(base.map((e) => e.label));
-  const openers = await page.evaluate(
-    ({ sel, words }) => {
-      const re = new RegExp(words, "i");
-      return Array.from(document.querySelectorAll(sel))
-        .filter((el) => {
-          const t = (el as HTMLElement).innerText?.trim() ?? "";
-          const aria = el.getAttribute("aria-label") ?? "";
-          return (
+  /* Open each disclosure and record what appears inside it.
+   * Tag them in the page first, then click by tag: the names we match on come
+   * from the same scanner that labels index rows, so a parent can never be
+   * recorded under a different spelling than the row it points at. */
+  const tag = async () =>
+    page.evaluate(
+      (words) => {
+        const S = (window as any).__wnavScan;
+        const re = new RegExp(words, "i");
+        const found: { id: number; name: string }[] = [];
+        let i = 0;
+        for (const el of S.all()) {
+          if (!S.isVisible(el) || S.isDisabled(el)) continue;
+          const name = S.nameOf(el);
+          if (!name) continue;
+          const declares =
+            el.hasAttribute("aria-haspopup") || el.hasAttribute("aria-expanded");
+          // A plain link is navigation, not a disclosure. Clicking it reloads the
+          // page (wiping these very markers) and the link crawl already covers
+          // where it goes.
+          if (el.tagName === "A" && el.getAttribute("href") && !declares) continue;
+          const opens =
             el.hasAttribute("aria-haspopup") ||
             el.getAttribute("aria-expanded") === "false" ||
             el.tagName === "SUMMARY" ||
             // A tab reveals a hidden panel exactly like a disclosure does, and
             // switching tabs is never destructive.
             el.getAttribute("role") === "tab" ||
-            re.test(t) ||
-            re.test(aria)
-          );
-        })
-        .map((el) => (el as HTMLElement).innerText?.trim() || el.getAttribute("aria-label") || "")
-        .filter(Boolean)
-        .slice(0, 12);
-    },
-    { sel: INTERACTIVE, words: DISCLOSURE_WORDS.source },
-  );
+            re.test(name);
+          if (!opens) continue;
+          el.setAttribute("data-wnav-open", name.replace(/["\\]/g, ""));
+          found.push({ id: i++, name: name.replace(/["\\]/g, "") });
+          if (i >= 12) break;
+        }
+        return found;
+      },
+      DISCLOSURE_WORDS.source,
+    );
 
-  for (const opener of openers) {
+  const openers = await tag();
+  const seen = new Set(base.map((e) => e.label));
+
+  for (const { name } of openers) {
     try {
-      await page.goto(url, { waitUntil: "domcontentloaded" });
-      await page.waitForTimeout(200);
-      const target = page.locator(`${INTERACTIVE}`, { hasText: opener }).first();
+      // Re-tag every time: opening a menu, or a click that reloads the same path,
+      // wipes the markers we navigate by.
+      await tag();
+      const target = page.locator(`[data-wnav-open="${name}"]`).first();
       if (!(await target.count())) continue;
-
-      /* Record the parent under the SAME name the element gets as a row. We find
-       * openers by innerText but label rows by aria-label first, so a control with
-       * both ends up under two spellings and the ancestor chain breaks. */
-      const canonical = await target.evaluate((el) => {
-        const a = el as HTMLElement;
-        return (a.getAttribute("aria-label") || a.getAttribute("title") || a.innerText || "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 60);
-      });
-
-      await target.click({ timeout: 2000, noWaitAfter: true });
-      await page.waitForTimeout(400);
-      if (new URL(page.url()).pathname !== path) continue; // it navigated; the link crawl covers it
+      // Some menus only appear on hover; hovering first costs nothing for the rest.
+      await target.hover({ timeout: 1500 }).catch(() => {});
+      await page.waitForTimeout(150);
       for (const e of await snapshot(page)) {
         if (seen.has(e.label)) continue;
         seen.add(e.label);
-        els.push({ ...e, page: path, parent: canonical || opener });
+        els.push({ ...e, page: path, parent: name });
+      }
+      await target.click({ timeout: 2000, noWaitAfter: true });
+      await page.waitForTimeout(350);
+      if (new URL(page.url()).pathname !== path) {
+        // It navigated; the link crawl covers that page. Come back and re-tag.
+        await page.goto(url, { waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(300);
+        continue;
+      }
+      for (const e of await snapshot(page)) {
+        if (seen.has(e.label)) continue;
+        seen.add(e.label);
+        els.push({ ...e, page: path, parent: name });
       }
     } catch {
-      // A disclosure that won't open is not a crawl failure.
+      // A disclosure that will not open is not a crawl failure.
     }
   }
 
@@ -139,11 +194,14 @@ async function crawlPage(page: Page, url: string, origin: string) {
 }
 
 export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}) {
-  const { maxPages = 40, storageState, headless = true } = opts;
+  const { maxPages = 40, storageState, headless = true, respectRobots = true } = opts;
   const origin = new URL(startUrl).origin;
+  const allowed = respectRobots ? await robotsGate(origin) : () => true;
+  let blocked = 0;
 
   const browser = await chromium.launch({ headless });
   const ctx = await browser.newContext(storageState ? { storageState } : {});
+  await ctx.addInitScript({ content: SCAN_SRC }); // same scanner the widget uses
   const page = await ctx.newPage();
 
   const queue = [startUrl];
@@ -155,6 +213,10 @@ export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}
       const url = queue.shift()!;
       const key = new URL(url).pathname;
       if (done.has(key)) continue;
+      if (!allowed(key)) {
+        blocked++;
+        continue;
+      }
       done.add(key);
       try {
         const { els, next } = await crawlPage(page, url, origin);
@@ -168,9 +230,11 @@ export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}
     await browser.close();
   }
 
+  if (blocked) console.log(`  skipped ${blocked} path(s) disallowed by robots.txt`);
+
   clearSite(site);
   putElements(site, all);
-  return { pages: done.size, elements: all.length };
+  return { pages: done.size, elements: all.length, blocked };
 }
 
 if (import.meta.filename === process.argv[1]) {
