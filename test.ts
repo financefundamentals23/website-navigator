@@ -40,6 +40,12 @@ const pages: Record<string, string> = {
      </details>
      <details><summary>Billing</summary><button>Update card</button></details>`,
   ),
+  // A host site that places and styles the trigger itself.
+  "/custom": `<!doctype html><html><head><style>:root{--wnav-accent:green}</style></head>
+<body><h1>Custom</h1><button id="myHelp">Need a hand?</button>
+<script src="http://localhost:${NAV_PORT}/nav.js" data-site="${SITE}"
+        data-api="http://localhost:${NAV_PORT}" data-trigger="#myHelp"></script>
+</body></html>`,
 };
 
 const siteServer = http.createServer((req, res) => {
@@ -252,6 +258,60 @@ try {
   // Page comes from the index, never from the model's junk field.
   assert.deepEqual(chained.steps.map((s: any) => s.page), ["/settings", "/settings"]);
   ok("inserted the 'Appearance' step and resolved pages from the index");
+
+  console.log("\n7. the launcher is the host site's to place and style");
+  const b2 = await chromium.launch();
+  const p2 = await b2.newPage();
+
+  // Default: icon button, bottom-right, no text.
+  await p2.goto(`http://localhost:${SITE_PORT}/`);
+  const def = await p2.evaluate(() => {
+    const sr = document.querySelector("#wnav-host")!.shadowRoot!;
+    const btn = sr.querySelector(".launch") as HTMLElement;
+    const a = sr.querySelector(".anchor") as HTMLElement;
+    const cs = getComputedStyle(a);
+    return {
+      text: btn.textContent!.trim(),
+      hasIcon: !!btn.querySelector("svg"),
+      label: btn.getAttribute("aria-label"),
+      bottom: cs.bottom,
+      right: cs.right,
+    };
+  });
+  assert.equal(def.text, "", "launcher should be icon-only, not text");
+  assert(def.hasIcon, "launcher should contain an svg icon");
+  assert(def.label && def.label.length > 3, "icon-only button needs an accessible name");
+  assert.equal(def.bottom, "20px");
+  assert.equal(def.right, "20px");
+  ok(`icon-only, bottom-right, labelled "${def.label}"`);
+
+  // Host site takes over: its own trigger, its own corner, its own colour.
+  await p2.goto(`http://localhost:${SITE_PORT}/custom`);
+  const custom = await p2.evaluate(() => {
+    const sr = document.querySelector("#wnav-host")!.shadowRoot!;
+    return {
+      builtInGone: !sr.querySelector(".anchor"),
+      // .launch is gone with the anchor, so read the accent off the tooltip
+      accent: getComputedStyle(sr.querySelector(".tip") as Element).backgroundColor,
+    };
+  });
+  assert(custom.builtInGone, "data-trigger should suppress the built-in button entirely");
+  assert.equal(
+    await p2.evaluate(() => !!document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".launch")),
+    false,
+    "our button should not be in the DOM at all when the site supplies its own",
+  );
+  assert.equal(custom.accent, "rgb(0, 128, 0)", "--wnav-accent from the page should apply");
+
+  // Their own button opens the panel.
+  await p2.click("#myHelp");
+  const opened = await p2.evaluate(
+    () => !!document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".panel.open"),
+  );
+  assert(opened, "the host site's own element should open the panel");
+  ok("data-trigger replaces it, and --wnav-accent restyles it");
+
+  await b2.close();
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
