@@ -1,0 +1,17 @@
+{
+  "name": "website-navigator",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Drop-in <script> tag that shows visitors where anything is on your site.",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.ts",
+    "crawl": "node --env-file-if-exists=.env crawl.ts",
+    "test": "node --env-file-if-exists=.env test.ts"
+  },
+  "engines": {
+    "node": ">=22.6"
+  },
+  "dependencies": {
+    "playwright": "^1.63.0"
+  }
+}
