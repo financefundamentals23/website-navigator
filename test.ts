@@ -214,6 +214,45 @@ try {
   assert(bad.confidence <= 0.3, `confidence should drop after a rejection, got ${bad.confidence}`);
   ok("kept the real step, dropped the invented one, lowered confidence");
 
+  console.log("\n6. skipped 'open this first' steps are put back");
+  // The model reliably names the destination and just as reliably forgets the
+  // collapsed panel in front of it, which strands the visitor on a page where the
+  // target isn't visible. The index knows the chain, so the server inserts it.
+  const lazy = http.createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" }).end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                answer: "Toggle dark mode.",
+                confidence: 0.9,
+                // Only the destination -- no "Appearance", and a junk page field
+                // of the kind real models emit (" /", "/*", `["\"\"]`).
+                steps: [{ label: "Dark mode", role: "switch", page: " /*", hint: "Toggle it" }],
+              }),
+            },
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise<void>((r) => lazy.listen(8796, r));
+  process.env.LLM_BASE_URL = "http://localhost:8796";
+
+  const chained = await post("/guide", { site: SITE, query: "dark mode please", url: "/settings" });
+  lazy.close();
+  delete process.env.LLM_BASE_URL;
+
+  assert.deepEqual(
+    chained.steps.map((s: any) => s.label),
+    ["Appearance", "Dark mode"],
+    `expected the accordion step to be inserted, got ${JSON.stringify(chained.steps)}`,
+  );
+  // Page comes from the index, never from the model's junk field.
+  assert.deepEqual(chained.steps.map((s: any) => s.page), ["/settings", "/settings"]);
+  ok("inserted the 'Appearance' step and resolved pages from the index");
+
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
   siteServer.close();
