@@ -77,6 +77,9 @@ Rules:
   elements by matching this text, so an invented or paraphrased label matches nothing.
 - If an element has a parent, the parent must be clicked first: emit it as its own step.
 - If the target is on another page, the first step is the link or nav item leading there.
+- The LAST step must be the thing the visitor actually asked for, not merely the page
+  or section that contains it. Stopping at "go to the calculators page" is not an
+  answer; keep going until the final step is the control itself.
 - Only emit steps for things that exist in the index or on the current page.
 - If the site genuinely has no such feature, return an empty steps array, say so in
   answer, and set confidence low.
@@ -116,9 +119,39 @@ function relevantIndex(site: string, query: string, here: string) {
     : keep.concat(rest.slice(0, MAX_ROWS - keep.length));
 }
 
-const asTsv = (rows: El[]) =>
-  `page\tlabel\trole\tinside_menu\n` +
-  rows.map((r) => [r.page, r.label, r.role, r.parent].join("\t")).join("\n");
+/* Menus nest: a button inside a collapsed panel inside an inactive tab. The index
+ * stores one parent per element, so walk the links to get the whole chain. */
+function ancestry(rows: El[]) {
+  // Keyed case-insensitively: the same control can be recorded as "Saved Items"
+  // in one place and "SAVED ITEMS" in another (CSS text-transform reaches
+  // innerText), and an exact-match chain silently breaks on that.
+  const k = (page: string, label: string) => `${page}|${label.toLowerCase().trim()}`;
+  const parentOf = new Map<string, string>();
+  for (const r of rows) if (r.parent) parentOf.set(k(r.page, r.label), r.parent);
+
+  return (page: string, label: string) => {
+    const chain: string[] = [];
+    const seen = new Set<string>();
+    let cur = parentOf.get(k(page, label));
+    while (cur && !seen.has(cur.toLowerCase())) {
+      seen.add(cur.toLowerCase());
+      chain.unshift(cur);
+      cur = parentOf.get(k(page, cur));
+    }
+    return chain;
+  };
+}
+
+// Hand the model the resolved chain rather than making it join rows itself.
+const asTsv = (rows: El[]) => {
+  const chainOf = ancestry(rows);
+  return (
+    `page\tlabel\trole\topen_these_first\n` +
+    rows
+      .map((r) => [r.page, r.label, r.role, chainOf(r.page, r.label).join(" > ")].join("\t"))
+      .join("\n")
+  );
+};
 
 async function guide(body: any) {
   const site = String(body.site ?? "");
@@ -161,9 +194,49 @@ async function guide(body: any) {
   );
   const before = out.steps.length;
   out.steps = out.steps.filter((s: any) => known.has(String(s.label ?? "").toLowerCase().trim()));
-  if (out.steps.length < before) {
+  const kept = out.steps.length; // count before expansion, or the check below lies
+
+  /* Put back the steps the model skipped. It reliably names the destination and
+   * just as reliably forgets the tab and the collapsed panel standing in front of
+   * it -- and a step whose target is still hidden strands the visitor. The index
+   * knows what has to be opened first, so insert those rather than ask nicely. */
+  const chainOf = ancestry(rows);
+  const byLabel = new Map(rows.map((r) => [`${r.page}|${r.label.toLowerCase().trim()}`, r]));
+
+  /* Never trust the model's `page`. Observed values include " /", "/*" and
+   * `["\"\"]`, and since the ancestor lookup is keyed on page, junk there made the
+   * inserted steps vanish at random. The index already knows where each label
+   * lives, so read it from there and only fall back for live-page-only labels. */
+  const pageOf = new Map<string, string>();
+  for (const r of rows) if (!pageOf.has(r.label.toLowerCase())) pageOf.set(r.label.toLowerCase(), r.page);
+  const pageFor = (label: string, claimed: unknown) => {
+    const known = pageOf.get(label.toLowerCase());
+    if (known) return known;
+    const c = String(claimed ?? "").trim();
+    return /^\/[\w\-/.]*$/.test(c) ? c : here;
+  };
+
+  const expanded: any[] = [];
+  for (const s of out.steps) {
+    const page = pageFor(String(s.label ?? "").trim(), s.page);
+    for (const parent of chainOf(page, String(s.label ?? "").trim())) {
+      if (expanded.some((e) => e.label.toLowerCase() === parent.toLowerCase())) continue;
+      const row = byLabel.get(`${page}|${parent.toLowerCase().trim()}`);
+      expanded.push({
+        // the index spelling is what the widget matches against the live DOM
+        label: row?.label ?? parent,
+        role: row?.role ?? "button",
+        page,
+        hint: `Open "${parent}"`,
+      });
+    }
+    expanded.push({ ...s, page });
+  }
+  out.steps = expanded;
+
+  if (kept < before) {
     out.confidence = Math.min(out.confidence ?? 0, 0.3);
-    console.warn(`[guide] dropped ${before - out.steps.length} invented step(s) for "${query}"`);
+    console.warn(`[guide] dropped ${before - kept} invented step(s) for "${query}"`);
     if (!out.steps.length) out.answer = "I couldn't find that on this site.";
   }
 
@@ -200,6 +273,33 @@ export const server = http.createServer(async (req, res) => {
   const url = new URL(req.url!, "http://x");
 
   try {
+    // Opening the server root used to 404, which reads like a broken server.
+    if (url.pathname === "/") {
+      const sites = db
+        .prepare(`SELECT site, COUNT(*) n FROM elements GROUP BY site ORDER BY site`)
+        .all() as { site: string; n: number }[];
+      res.writeHead(200, { "content-type": "text/html" });
+      return res.end(`<!doctype html><meta charset="utf-8">
+<title>Website Navigator</title>
+<style>body{font:15px/1.6 system-ui;margin:0;padding:40px;max-width:640px}
+code{background:#eee;padding:2px 6px;border-radius:4px}
+table{border-collapse:collapse;margin:12px 0}td{padding:4px 14px 4px 0}</style>
+<h1>Website Navigator</h1>
+<p>This is the API server, not a site. It serves
+<code>/nav.js</code> and answers <code>POST /guide</code>.</p>
+<h2>Indexed sites</h2>
+${
+        sites.length
+          ? `<table>${sites
+              .map((s) => `<tr><td><b>${s.site}</b></td><td>${s.n} elements</td></tr>`)
+              .join("")}</table>`
+          : "<p>None yet.</p>"
+      }
+<h2>Try it locally</h2>
+<p>Serve a site folder with the widget already injected, and index it:</p>
+<p><code>npm run dev -- ../finance-calculator-tools</code></p>`);
+    }
+
     if (url.pathname === "/nav.js") {
       res.writeHead(200, { "content-type": "application/javascript" });
       return res.end(readFileSync(new URL("./nav.js", import.meta.url), "utf8"));

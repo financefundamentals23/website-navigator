@@ -89,23 +89,59 @@
 
   // ---------- UI ----------
 
+  /* Placement and looks are the host site's call.
+   *   data-position  bottom-right (default) | bottom-left | top-right | top-left
+   *   data-offset    distance from that corner, any CSS length
+   *   data-trigger   CSS selector for YOUR OWN element; the built-in button is
+   *                  then never rendered and you place the control wherever you
+   *                  like in your own markup
+   *   data-label     accessible name for the icon button
+   *   data-placeholder  text in the question box
+   * Colours and size come from CSS custom properties, which cross the shadow
+   * boundary on their own -- set them on :root in your stylesheet and they apply
+   * here, no options needed:
+   *   --wnav-accent --wnav-bg --wnav-fg --wnav-size --wnav-radius --wnav-z  */
+  const conf = {
+    position: script?.dataset.position || "bottom-right",
+    offset: script?.dataset.offset || "20px",
+    trigger: script?.dataset.trigger || "",
+    label: script?.dataset.label || "Help - find anything on this page",
+    placeholder: script?.dataset.placeholder || "e.g. where is dark mode?",
+  };
+  const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+  const [vert, horiz] = (
+    ["bottom-right", "bottom-left", "top-right", "top-left"].includes(conf.position)
+      ? conf.position
+      : "bottom-right"
+  ).split("-");
+
   const host = document.createElement("div");
   host.id = "wnav-host";
   host.style.cssText =
-    "position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
+    "position:fixed;inset:0;z-index:var(--wnav-z,2147483647);pointer-events:none;";
   const root = host.attachShadow({ mode: "open" });
   root.innerHTML = `
     <style>
       :host { all: initial; }
       * { box-sizing: border-box; font: 14px/1.45 system-ui, -apple-system, sans-serif; }
+      .anchor { position: fixed; ${vert}: ${conf.offset}; ${horiz}: ${conf.offset}; }
       .launch {
-        position: fixed; right: 20px; bottom: 20px; pointer-events: auto;
-        background: #1b1b1f; color: #fff; border: 0; border-radius: 999px;
-        padding: 11px 18px; cursor: pointer; box-shadow: 0 6px 24px rgba(0,0,0,.28);
+        pointer-events: auto; display: grid; place-items: center;
+        width: var(--wnav-size, 44px); height: var(--wnav-size, 44px);
+        background: var(--wnav-accent, #6a5cff); color: #fff;
+        border: 0; border-radius: var(--wnav-radius, 50%);
+        cursor: pointer; box-shadow: 0 4px 18px rgba(0,0,0,.28);
+        transition: transform .12s;
       }
+      .launch:hover { transform: scale(1.06); }
+      .launch:focus-visible { outline: 3px solid var(--wnav-accent, #6a5cff); outline-offset: 3px; }
+      .launch svg { width: 58%; height: 58%; display: block; }
       .panel {
-        position: fixed; right: 20px; bottom: 20px; width: 320px; pointer-events: auto;
-        background: #fff; color: #1b1b1f; border-radius: 14px; padding: 14px;
+        position: fixed; ${vert}: ${conf.offset}; ${horiz}: ${conf.offset};
+        width: 320px; max-width: calc(100vw - 32px); pointer-events: auto;
+        background: var(--wnav-bg, #fff); color: var(--wnav-fg, #1b1b1f);
+        border-radius: 14px; padding: 14px;
         box-shadow: 0 10px 40px rgba(0,0,0,.3); display: none;
       }
       .panel.open { display: block; }
@@ -113,17 +149,17 @@
         width: 100%; padding: 10px 12px; border: 1px solid #d6d6db;
         border-radius: 9px; outline: none;
       }
-      input:focus { border-color: #6a5cff; }
+      input:focus { border-color: var(--wnav-accent, #6a5cff); }
       .msg { margin-top: 10px; color: #55555f; min-height: 18px; }
       .ring {
         position: fixed; border-radius: 10px; pointer-events: none; display: none;
-        box-shadow: 0 0 0 3px #6a5cff, 0 0 0 9999px rgba(12,12,20,.55);
+        box-shadow: 0 0 0 3px var(--wnav-accent, #6a5cff), 0 0 0 9999px rgba(12,12,20,.55);
         transition: top .16s, left .16s, width .16s, height .16s;
       }
       .ring.on { display: block; }
       .tip {
         position: fixed; max-width: 260px; pointer-events: auto; display: none;
-        background: #6a5cff; color: #fff; padding: 9px 12px; border-radius: 9px;
+        background: var(--wnav-accent, #6a5cff); color: #fff; padding: 9px 12px; border-radius: 9px;
         box-shadow: 0 6px 20px rgba(0,0,0,.3);
       }
       .tip.on { display: block; }
@@ -133,33 +169,69 @@
         border: 0; border-radius: 6px; padding: 4px 9px; cursor: pointer;
       }
       @media (prefers-color-scheme: dark) {
-        .panel { background: #26262c; color: #f2f2f5; }
+        .panel { background: var(--wnav-bg, #26262c); color: var(--wnav-fg, #f2f2f5); }
         input { background: #1b1b1f; color: #f2f2f5; border-color: #3a3a44; }
         .msg { color: #a9a9b6; }
       }
+      @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
     </style>
-    <button class="launch" part="launch">Find anything</button>
-    <div class="panel">
-      <input placeholder="e.g. where is dark mode?" />
-      <div class="msg"></div>
+    <div class="anchor">
+      <button class="launch" part="launch" aria-label="${esc(conf.label)}" title="${esc(conf.label)}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+             stroke-linecap="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9.2"/>
+          <path d="M9.3 9.2a2.8 2.8 0 1 1 3.4 3.1v1.4"/>
+          <path d="M12.6 17.2h.01"/>
+        </svg>
+      </button>
+    </div>
+    <div class="panel" role="dialog" aria-label="${esc(conf.label)}">
+      <input aria-label="What are you looking for?" placeholder="${esc(conf.placeholder)}" />
+      <div class="msg" role="status" aria-live="polite"></div>
     </div>
     <div class="ring"></div>
     <div class="tip"><b></b><span></span><br><button>Stop</button></div>`;
   document.documentElement.appendChild(host);
 
   const $ = (s) => root.querySelector(s);
-  const launch = $(".launch"),
+  const anchor = $(".anchor"),
+    launch = $(".launch"),
     panel = $(".panel"),
     input = $("input"),
     msg = $(".msg"),
     ring = $(".ring"),
     tip = $(".tip");
 
-  launch.onclick = () => {
+  /* Bring your own trigger: point data-trigger at an element in your own markup
+   * and ours never appears, so the control sits exactly where your design wants
+   * it. Anything else is still the floating icon. */
+  let custom = null;
+  try {
+    custom = conf.trigger ? document.querySelector(conf.trigger) : null;
+  } catch {
+    console.warn(`[navigator] data-trigger \`${conf.trigger}\` is not a valid selector`);
+  }
+  if (conf.trigger && !custom) {
+    console.warn(`[navigator] data-trigger "${conf.trigger}" matched nothing; using the built-in button`);
+  }
+  if (custom) anchor.remove();
+
+  const open = () => {
     panel.classList.add("open");
-    launch.style.display = "none";
+    showLauncher(false);
     input.focus();
   };
+  // With a custom trigger the element belongs to the site, so leave it alone.
+  function showLauncher(visible) {
+    if (custom) return;
+    anchor.style.display = visible ? "" : "none";
+  }
+
+  launch.onclick = open;
+  custom?.addEventListener("click", (e) => {
+    e.preventDefault();
+    open();
+  });
   $(".tip button").onclick = () => stop();
 
   // ---------- guiding ----------
@@ -181,7 +253,7 @@
     ring.classList.remove("on");
     tip.classList.remove("on");
     sessionStorage.removeItem(KEY);
-    launch.style.display = "";
+    showLauncher(true);
   }
 
   function place() {
@@ -225,7 +297,7 @@
       tip.classList.remove("on");
       msg.textContent = "You're there.";
       panel.classList.add("open");
-      launch.style.display = "none";
+      showLauncher(false);
       sessionStorage.removeItem(KEY);
       return;
     }
@@ -250,7 +322,7 @@
       ring.classList.remove("on");
       tip.classList.remove("on");
       panel.classList.add("open");
-      launch.style.display = "none";
+      showLauncher(false);
       msg.textContent = `Couldn't find "${step.label}" on this page.`;
       return;
     }
@@ -297,7 +369,7 @@
       at = 0;
       if (!steps.length) return;
       panel.classList.remove("open");
-      launch.style.display = "";
+      showLauncher(true);
       awaitStep();
     } catch (err) {
       msg.textContent = "Sorry — couldn't work that out.";
@@ -312,7 +384,7 @@
     }
     if (e.key === "Escape") {
       panel.classList.remove("open");
-      launch.style.display = "";
+      showLauncher(true);
     }
   });
 
@@ -321,10 +393,10 @@
     const saved = JSON.parse(sessionStorage.getItem(KEY) || "null");
     if (saved?.steps?.length && saved.at < saved.steps.length) {
       ({ steps, at, query, recovered } = saved);
-      launch.style.display = "none";
+      showLauncher(false);
       awaitStep();
     }
   } catch {}
 
-  window.navigator_widget = { ask, stop };
+  window.navigator_widget = { ask, stop, open, close: () => { panel.classList.remove("open"); showLauncher(true); } };
 })();

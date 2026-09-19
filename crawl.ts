@@ -107,13 +107,25 @@ async function crawlPage(page: Page, url: string, origin: string) {
       await page.waitForTimeout(200);
       const target = page.locator(`${INTERACTIVE}`, { hasText: opener }).first();
       if (!(await target.count())) continue;
+
+      /* Record the parent under the SAME name the element gets as a row. We find
+       * openers by innerText but label rows by aria-label first, so a control with
+       * both ends up under two spellings and the ancestor chain breaks. */
+      const canonical = await target.evaluate((el) => {
+        const a = el as HTMLElement;
+        return (a.getAttribute("aria-label") || a.getAttribute("title") || a.innerText || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 60);
+      });
+
       await target.click({ timeout: 2000, noWaitAfter: true });
       await page.waitForTimeout(400);
       if (new URL(page.url()).pathname !== path) continue; // it navigated; the link crawl covers it
       for (const e of await snapshot(page)) {
         if (seen.has(e.label)) continue;
         seen.add(e.label);
-        els.push({ ...e, page: path, parent: opener });
+        els.push({ ...e, page: path, parent: canonical || opener });
       }
     } catch {
       // A disclosure that won't open is not a crawl failure.

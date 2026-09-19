@@ -78,6 +78,58 @@ node server.ts
 <script src="https://your-server/nav.js" data-site="acme"></script>
 ```
 
+
+## Customising the launcher
+
+By default you get a small circular help icon in the bottom-right corner. Every
+part of that is yours to change.
+
+### Put it where you want
+
+```html
+<script src="https://your-server/nav.js" data-site="acme"
+        data-position="bottom-left" data-offset="32px"></script>
+```
+
+`data-position` takes `bottom-right` (default), `bottom-left`, `top-right` or
+`top-left`; `data-offset` is any CSS length.
+
+### Or use your own button, anywhere in your markup
+
+Point `data-trigger` at one of your own elements and ours is never rendered at
+all — put the control in your nav bar, your footer, a menu, wherever it belongs:
+
+```html
+<button id="help">Need a hand?</button>
+<script src="https://your-server/nav.js" data-site="acme"
+        data-trigger="#help"></script>
+```
+
+You can also open it from your own code: `window.navigator_widget.open()`, plus
+`.close()`, `.ask("where is dark mode")` and `.stop()`.
+
+### Style it from your own stylesheet
+
+CSS custom properties cross the shadow boundary, so there is no theming API to
+learn — set them on `:root` and they apply:
+
+```css
+:root {
+  --wnav-accent: #132135;  /* button, spotlight ring and tooltip */
+  --wnav-bg:     #fff;     /* question panel background */
+  --wnav-fg:     #1b1b1f;  /* question panel text */
+  --wnav-size:   52px;     /* icon button size */
+  --wnav-radius: 14px;     /* 50% for a circle, 0 for a square */
+  --wnav-z:      2147483647;
+}
+```
+
+### Wording
+
+`data-label` sets the button's accessible name and tooltip, `data-placeholder`
+the text in the question box. The button is icon-only, so `data-label` is what
+screen readers announce — keep it meaningful.
+
 ## Cost and limits
 
 One model call per *distinct* question per site. Answers are cached by question,
