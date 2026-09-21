@@ -331,6 +331,8 @@ try {
   });
   assert.deepEqual(closed, { panelOpen: false, launcherShown: true, focusOnLauncher: true });
   ok("close button hides the panel, brings the launcher back, returns focus to it");
+  const note = await p2.evaluate(() => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".note")!.textContent);
+  assert.match(note!, /doesn.t answer questions/, "panel should say it only helps navigate");
 
   // Host site takes over: its own trigger, its own corner, its own colour.
   await p2.goto(`http://localhost:${SITE_PORT}/custom`);

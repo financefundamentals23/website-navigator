@@ -130,6 +130,7 @@
      *                  like in your own markup
      *   data-label     accessible name for the icon button
      *   data-placeholder  text in the question box
+     *   data-title / data-note  the panel's heading, and its what-this-is note
      * Colours and size come from CSS custom properties, which cross the shadow
      * boundary on their own -- set them on :root in your stylesheet and they apply
      * here, no options needed:
@@ -140,6 +141,12 @@
       trigger: script?.dataset.trigger || "",
       label: script?.dataset.label || "Help - find anything on this page",
       placeholder: script?.dataset.placeholder || "e.g. where is dark mode?",
+      title: script?.dataset.title || "Find anything",
+      // Says plainly what this is and isn't: a guide to places on the site,
+      // not an assistant that answers questions or acts for the visitor.
+      note:
+        script?.dataset.note ||
+        "Shows you where things are on this site. It doesn't answer questions or do anything for you, and as AI it can get things wrong.",
     };
     const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
@@ -170,29 +177,56 @@
         .launch:hover { transform: scale(1.06); }
         .launch:focus-visible { outline: 3px solid var(--wnav-accent, #6a5cff); outline-offset: 3px; }
         .launch svg { width: 58%; height: 58%; display: block; }
+        /* The accent pair behind the AI look: --wnav-accent (as everywhere) plus
+         * --wnav-accent-2, the far end of the gradient. */
         .panel {
+          --g: linear-gradient(135deg, var(--wnav-accent, #6a5cff), var(--wnav-accent-2, #c04dff));
+          --bg: var(--wnav-bg, #fff);
           position: fixed; ${vert}: ${conf.offset}; ${horiz}: ${conf.offset};
-          width: 320px; max-width: calc(100vw - 32px); pointer-events: auto;
-          background: var(--wnav-bg, #fff); color: var(--wnav-fg, #1b1b1f);
-          border-radius: 14px; padding: 14px;
-          box-shadow: 0 10px 40px rgba(0,0,0,.3); display: none;
+          width: 340px; max-width: calc(100vw - 32px); pointer-events: auto;
+          color: var(--wnav-fg, #1b1b1f);
+          /* gradient hairline border: fill the padding box, let the border box show the gradient */
+          border: 1px solid transparent; border-radius: 16px; padding: 12px 14px 12px;
+          background: linear-gradient(var(--bg), var(--bg)) padding-box, var(--g) border-box;
+          box-shadow: 0 18px 50px -12px color-mix(in srgb, var(--wnav-accent, #6a5cff) 45%, rgba(0,0,0,.35));
+          display: none;
         }
-        .panel.open { display: block; }
-        .row { display: flex; gap: 8px; align-items: center; }
+        .panel.open { display: block; animation: rise .18s ease-out; }
+        @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+        .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+        .spark { width: 18px; height: 18px; flex: none; }
+        .spark .twinkle { transform-origin: 18.5px 5.5px; animation: twinkle 2.6s ease-in-out infinite; }
+        @keyframes twinkle { 50% { opacity: .35; transform: scale(.6); } }
+        .title {
+          font-weight: 650; letter-spacing: .01em;
+          background: var(--g); -webkit-background-clip: text; background-clip: text; color: transparent;
+        }
+        .badge {
+          font-size: 10px; font-weight: 700; letter-spacing: .08em; line-height: 1;
+          padding: 3px 6px; border-radius: 999px; color: #fff; background: var(--g);
+        }
         input {
-          flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid #d6d6db;
-          border-radius: 9px; outline: none;
+          width: 100%; padding: 10px 12px; border: 1px solid #d6d6db;
+          border-radius: 10px; outline: none;
         }
+        .note {
+          display: flex; gap: 7px; align-items: flex-start;
+          margin: 10px -4px 0; padding: 8px 10px; border-radius: 10px;
+          font-size: 12px; line-height: 1.4; color: #55555f;
+          background: color-mix(in srgb, var(--wnav-accent, #6a5cff) 8%, transparent);
+        }
+        .note svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--wnav-accent, #6a5cff); }
         .close {
-          flex: none; width: 32px; height: 32px; display: grid; place-items: center;
+          flex: none; margin-left: auto; width: 28px; height: 28px; display: grid; place-items: center;
           background: none; border: 0; border-radius: 8px; color: inherit;
           opacity: .6; cursor: pointer;
         }
         .close:hover { opacity: 1; background: rgba(127,127,127,.15); }
         .close:focus-visible { opacity: 1; outline: 2px solid var(--wnav-accent, #6a5cff); }
-        .close svg { width: 16px; height: 16px; display: block; }
+        .close svg { width: 14px; height: 14px; display: block; }
         input:focus { border-color: var(--wnav-accent, #6a5cff); }
-        .msg { margin-top: 10px; color: #55555f; min-height: 18px; }
+        .msg { margin-top: 10px; color: #55555f; }
+        .msg:empty { display: none; }
         .ring {
           position: fixed; border-radius: 10px; pointer-events: none; display: none;
           box-shadow: 0 0 0 3px var(--wnav-accent, #6a5cff), 0 0 0 9999px rgba(12,12,20,.55);
@@ -211,11 +245,12 @@
           border: 0; border-radius: 6px; padding: 4px 9px; cursor: pointer;
         }
         @media (prefers-color-scheme: dark) {
-          .panel { background: var(--wnav-bg, #26262c); color: var(--wnav-fg, #f2f2f5); }
+          .panel { --bg: var(--wnav-bg, #26262c); color: var(--wnav-fg, #f2f2f5); }
+          .note { color: #b4b4c2; }
           input { background: #1b1b1f; color: #f2f2f5; border-color: #3a3a44; }
           .msg { color: #a9a9b6; }
         }
-        @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+        @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
       </style>
       <div class="anchor">
         <button class="launch" part="launch" aria-label="${esc(conf.label)}" title="${esc(conf.label)}">
@@ -228,14 +263,32 @@
         </button>
       </div>
       <div class="panel" role="dialog" aria-label="${esc(conf.label)}">
-        <div class="row">
-          <input aria-label="What are you looking for?" placeholder="${esc(conf.placeholder)}" />
+        <div class="head">
+          <svg class="spark" viewBox="0 0 24 24" aria-hidden="true">
+            <defs>
+              <linearGradient id="wnavg" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" style="stop-color: var(--wnav-accent, #6a5cff)"/>
+                <stop offset="1" style="stop-color: var(--wnav-accent-2, #c04dff)"/>
+              </linearGradient>
+            </defs>
+            <path fill="url(#wnavg)" d="M10 3.5l1.9 5.6 5.6 1.9-5.6 1.9L10 18.5l-1.9-5.6L2.5 11l5.6-1.9z"/>
+            <path class="twinkle" fill="url(#wnavg)" d="M18.5 2.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/>
+          </svg>
+          <span class="title">${esc(conf.title)}</span>
+          <span class="badge">AI</span>
           <button class="close" type="button" aria-label="Close">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"
                  stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
           </button>
         </div>
+        <input aria-label="What are you looking for?" placeholder="${esc(conf.placeholder)}" />
         <div class="msg" role="status" aria-live="polite"></div>
+        <p class="note">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <circle cx="8" cy="8" r="6.5"/><path d="M8 7.2v4M8 4.8h.01" stroke-linecap="round"/>
+          </svg>
+          <span>${esc(conf.note)}</span>
+        </p>
       </div>
       <div class="ring"></div>
       <div class="tip"><b></b><span></span><br><button>Stop</button></div>`;
