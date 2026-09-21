@@ -66,6 +66,8 @@ const post = async (path: string, body: object) => {
 
 const ok = (s: string) => console.log(`  \x1b[32mok\x1b[0m ${s}`);
 
+// Lets check 8 give each simulated visitor its own address.
+process.env.TRUST_PROXY = "1";
 const { server: navServer } = await import("./server.ts");
 
 await new Promise<void>((r) => siteServer.listen(SITE_PORT, r));
@@ -312,6 +314,38 @@ try {
   ok("data-trigger replaces it, and --wnav-accent restyles it");
 
   await b2.close();
+
+  console.log("\n8. rate limits");
+  const ask = (ip: string, body: object) =>
+    fetch(`http://localhost:${NAV_PORT}/guide`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": ip },
+      body: JSON.stringify(body),
+    });
+
+  // Per IP: ten questions a minute, cached or not, then 429 with a wait time.
+  const cachedQ = { site: SITE, query: "where is dark mode?", url: "/" };
+  for (let i = 1; i <= 10; i++) {
+    const r = await ask("203.0.113.9", cachedQ);
+    assert.equal(r.status, 200, `request ${i} of 10 should be allowed, got ${r.status}`);
+  }
+  const over = await ask("203.0.113.9", cachedQ);
+  assert.equal(over.status, 429, "the 11th question in a minute should be refused");
+  const wait = Number(over.headers.get("retry-after"));
+  assert(wait >= 1 && wait <= 60, `Retry-After should be 1-60s, got ${wait}`);
+  assert.equal((await over.json()).retryAfter, wait, "retryAfter in the body must match the header");
+  assert.equal((await ask("198.51.100.4", cachedQ)).status, 200, "another visitor must be unaffected");
+  ok(`11th question from one IP refused with Retry-After ${wait}s; other IPs unaffected`);
+
+  // Per site: counts model calls only. With the cap at zero, a cache miss is
+  // refused before the model is called -- and a cache hit is still served.
+  process.env.RATE_SITE_PER_MIN = "0";
+  const miss = await ask("192.0.2.1", { ...cachedQ, query: "a question nobody has asked", noCache: true });
+  const hit = await ask("192.0.2.2", cachedQ);
+  delete process.env.RATE_SITE_PER_MIN;
+  assert.equal(miss.status, 429, "a cache miss past the site cap should be refused");
+  assert.equal(hit.status, 200, "the site cap must not block answers already cached");
+  ok("site cap refuses model calls but still serves cached answers");
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {

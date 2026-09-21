@@ -130,6 +130,24 @@ learn — set them on `:root` and they apply:
 the text in the question box. The button is icon-only, so `data-label` is what
 screen readers announce — keep it meaningful.
 
+## Rate limits
+
+`POST /guide` answers 429 with a `Retry-After` once either limit is hit, and
+the widget tells the visitor how long to wait.
+
+| Variable | Default | Counts |
+|---|---|---|
+| `RATE_IP_PER_MIN` | 10 | every question from one IP, cached or not |
+| `RATE_SITE_PER_MIN` | 60 | model calls for one site -- cache hits are free and never refused |
+| `TRUST_PROXY` | off | set to `1` only behind a proxy you run, so the client IP comes from `X-Forwarded-For` |
+
+Leave `TRUST_PROXY` off unless your own proxy sets that header: anyone can send
+`X-Forwarded-For`, and trusting it lets them dodge the per-IP limit by
+changing it on every request. Behind a proxy, though, it has to be on, or every
+visitor shares the proxy's address and one limit.
+
+The counters live in process memory, so the limits are per server instance.
+
 ## Cost and limits
 
 One model call per *distinct* question per site. Answers are cached by question,

@@ -42,6 +42,53 @@ async function complete(system: string, user: string, schema: object) {
   return JSON.parse(text);
 }
 
+/* Rate limits. Two different jobs:
+ *   per IP   -- a visitor asking more than ~10 questions a minute is not a visitor.
+ *               Counts every /guide call, cached or not.
+ *   per site -- caps model calls (cache misses) for one site, since misses are
+ *               what spend quota. Stops one busy or abused site draining it all.
+ * Limits are read per call so they can be tuned without a restart.
+ * ponytail: fixed windows in process memory -- per server instance, and a burst
+ * straddling a window edge can reach 2x. Move to Redis when running >1 instance. */
+function limiter(max: () => number, windowMs = 60_000) {
+  const hits = new Map<string, { n: number; reset: number }>();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits) if (v.reset <= now) hits.delete(k);
+  }, windowMs).unref();
+
+  // Returns 0 when allowed, otherwise the seconds until the window resets.
+  return (key: string) => {
+    const now = Date.now();
+    let h = hits.get(key);
+    if (!h || h.reset <= now) hits.set(key, (h = { n: 0, reset: now + windowMs }));
+    h.n++;
+    return h.n <= max() ? 0 : Math.max(1, Math.ceil((h.reset - now) / 1000));
+  };
+}
+
+const perIp = limiter(() => Number(process.env.RATE_IP_PER_MIN ?? 10));
+const perSite = limiter(() => Number(process.env.RATE_SITE_PER_MIN ?? 60));
+
+class RateLimited extends Error {
+  retryAfter: number;
+  constructor(retryAfter: number, message: string) {
+    super(message);
+    this.retryAfter = retryAfter;
+  }
+}
+
+/* X-Forwarded-For is attacker-controlled unless a proxy you run sets it, so it is
+ * only trusted when told to. Trusting it blindly lets anyone dodge the per-IP
+ * limit by sending a fresh header on every request. */
+function clientIp(req: http.IncomingMessage) {
+  if (process.env.TRUST_PROXY === "1") {
+    const first = String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
+
 const SCHEMA = {
   type: "object",
   properties: {
@@ -174,6 +221,10 @@ async function guide(body: any) {
 
   const live = (body.digest ?? []).slice(0, 200);
   const digest = live.map((d: any) => `${d.label}\t${d.role}`).join("\n");
+
+  // Checked here, after the cache and the index lookup: only a real model call counts.
+  const siteWait = perSite(site);
+  if (siteWait) throw new RateLimited(siteWait, "This site is getting a lot of questions right now.");
 
   const out = await complete(
     SYSTEM,
@@ -312,6 +363,9 @@ ${
     }
 
     if (url.pathname === "/guide" && req.method === "POST") {
+      // Before reading the body: a flood should cost us as little as possible.
+      const ipWait = perIp(clientIp(req));
+      if (ipWait) throw new RateLimited(ipWait, "Too many questions -- give it a minute.");
       const out = await guide(await readBody(req));
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify(out));
@@ -331,6 +385,15 @@ ${
 
     res.writeHead(404).end("not found");
   } catch (err) {
+    if (err instanceof RateLimited) {
+      // retryAfter goes in the body too: a cross-origin widget cannot read the
+      // Retry-After header without an extra CORS expose.
+      res.writeHead(429, {
+        "content-type": "application/json",
+        "retry-after": String(err.retryAfter),
+      });
+      return res.end(JSON.stringify({ error: err.message, retryAfter: err.retryAfter }));
+    }
     res.writeHead(400, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: (err as Error).message }));
   }

@@ -338,6 +338,14 @@
         }),
       });
       const data = await r.json();
+      if (r.status === 429) {
+        // A limit, not a failure: say so plainly, and say when to try again.
+        panel.classList.add("open");
+        showLauncher(false);
+        const s = data.retryAfter;
+        msg.textContent = `Too many questions just now — try again in ${s} second${s === 1 ? "" : "s"}.`;
+        return;
+      }
       if (data.error) throw new Error(data.error);
       msg.textContent = data.answer || "";
       steps = data.steps || [];

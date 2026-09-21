@@ -16,8 +16,9 @@ can then spend your model quota in a loop. There is no auth, no rate limit and
 no origin check.
 
 - Per-site public key, and check `Origin` against a registered allowlist.
-- Rate limit per IP and per site. A visitor asking more than ~10 questions a
-  minute is not a visitor.
+- ~~Rate limit per IP and per site.~~ **Done.** 10 questions/min per IP (every
+  call), 60 model calls/min per site (cache misses only), 429 with Retry-After.
+  In-process memory: per instance, so it needs Redis before running more than one.
 - Cap spend per site per day; fail closed to a friendly "try again later".
 
 The answer cache absorbs honest traffic, so limits can be tight. Abuse is
