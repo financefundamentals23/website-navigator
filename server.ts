@@ -296,12 +296,24 @@ async function guide(body: any) {
    * `["\"\"]`, and since the ancestor lookup is keyed on page, junk there made the
    * inserted steps vanish at random. The index already knows where each label
    * lives, so read it from there and only fall back for live-page-only labels. */
-  const pageOf = new Map<string, string>();
-  for (const r of rows) if (!pageOf.has(r.label.toLowerCase())) pageOf.set(r.label.toLowerCase(), r.page);
+  const pagesOf = new Map<string, string[]>();
+  for (const r of rows) {
+    const k = r.label.toLowerCase();
+    if (!pagesOf.has(k)) pagesOf.set(k, []);
+    if (!pagesOf.get(k)!.includes(r.page)) pagesOf.get(k)!.push(r.page);
+  }
   const pageFor = (label: string, claimed: unknown) => {
-    const known = pageOf.get(label.toLowerCase());
-    if (known) return known;
     const c = String(claimed ?? "").trim();
+    const known = pagesOf.get(label.toLowerCase());
+    if (known) {
+      /* The same label can live on several pages -- "Liquid savings (S)" is on
+       * both the calculator and the profile. Picking the first one seen sent a
+       * visitor to the wrong page, so use the model's claim when it names one of
+       * them, then the page the visitor is on, and only then the first. */
+      if (known.includes(c)) return c;
+      if (known.includes(here)) return here;
+      return known[0];
+    }
     return /^\/[\w\-/.]*$/.test(c) ? c : here;
   };
 

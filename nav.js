@@ -67,7 +67,7 @@
 
     /* Match by what the element says, never by a stored CSS path -- selectors break
      * on the next deploy, visible labels usually don't. */
-    function resolve(step) {
+    function find(step) {
       const want = step.label.toLowerCase().trim();
       let best = null;
       let bestScore = 0;
@@ -91,18 +91,25 @@
           best = el;
         }
       }
-      if (best) return best;
-
-      // Target lives on another page: highlight whatever link goes there.
-      if (step.page && step.page !== location.pathname) {
-        return (
-          candidates().find(
-            (el) => el.tagName === "A" && new URL(el.href, location.href).pathname === step.page,
-          ) || null
-        );
-      }
-      return null;
+      return best;
     }
+
+    // Not the step itself: a link to the page the step is on. A detour.
+    function linkTo(step) {
+      if (!step.page || step.page === location.pathname) return null;
+      return (
+        candidates().find(
+          (el) => el.tagName === "A" && new URL(el.href, location.href).pathname === step.page,
+        ) || null
+      );
+    }
+
+    /* How long the real element gets to appear before a link to its page is
+     * offered instead. Signed-in pages render their fields a beat after load --
+     * Firebase has to confirm the session first -- and offering the link at once
+     * pointed a visitor at "Finance Calculator" while the field they wanted was
+     * about to appear right in front of them. */
+    const LINK_AFTER_MS = 2500;
 
     const digest = () =>
       candidates()
@@ -266,6 +273,7 @@
       at = 0,
       query = "",
       target = null,
+      viaLink = false, // target is a detour link, not the step
       poll = null,
       recovered = false;
 
@@ -304,16 +312,19 @@
       requestAnimationFrame(track);
     })();
 
-    function show(step) {
-      target = resolve(step);
-      if (!target) return false;
+    function show(step, el, isLink) {
+      target = el;
+      viaLink = isLink;
       place(); // before revealing, or it flashes at the previous step's position
       ring.classList.add("on");
       tip.classList.add("on");
       tip.querySelector("b").textContent = `Step ${at + 1} of ${steps.length}`;
-      tip.querySelector("span").textContent = step.hint || `Click "${step.label}"`;
+      // Say so when it's a detour; the step's own hint over a nav link reads as
+      // "the thing you want is here", which it isn't.
+      tip.querySelector("span").textContent = isLink
+        ? `Go here first -- "${step.label}" is on that page.`
+        : step.hint || `Click "${step.label}"`;
       target.scrollIntoView({ block: "center", behavior: "smooth" });
-      return true;
     }
 
     /* The target often doesn't exist yet -- a menu is still animating open, or the
@@ -331,12 +342,30 @@
       }
       save();
       const step = steps[at];
-      if (show(step)) return;
+      const t0 = Date.now();
+      target = null;
+      viaLink = false;
 
-      const until = Date.now() + 6000;
+      // The real element always wins, even after a detour link has been offered.
+      const tick = () => {
+        const el = find(step);
+        if (el) {
+          show(step, el, false);
+          return true;
+        }
+        if (!viaLink && Date.now() - t0 > LINK_AFTER_MS) {
+          const link = linkTo(step);
+          if (link) show(step, link, true);
+        }
+        return false;
+      };
+      if (tick()) return;
+
       poll = setInterval(() => {
-        if (show(step)) return clearInterval(poll);
-        if (Date.now() > until) {
+        if (tick()) return clearInterval(poll);
+        // With a detour on offer the visitor has a way forward, so keep watching
+        // for the real thing. With nothing, give up after a while and re-ask.
+        if (!viaLink && Date.now() - t0 > 6000) {
           clearInterval(poll);
           recover(step);
         }
@@ -367,7 +396,8 @@
           if (!target || !steps.length) return;
           const hit = e.target === target || target.contains(e.target) || e.target.contains(target);
           if (!hit) return;
-          at++;
+          // Following a detour link brings the visitor to the step; it isn't the step.
+          if (!viaLink) at++;
           target = null;
           ring.classList.remove("on");
           tip.classList.remove("on");
