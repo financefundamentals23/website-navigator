@@ -24,11 +24,12 @@ ENV NAV_DB=/data/nav.db
 RUN mkdir -p /data && chown node:node /data
 VOLUME /data
 
-# Not root: this process drives a real browser around other people's websites.
-USER node
+# Starts as root only long enough to fix /data ownership, then runs as node.
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["entrypoint.sh"]
 
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD node -e "fetch('http://localhost:8787/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+  CMD node -e "fetch('http://localhost:'+(process.env.PORT||8787)+'/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
 CMD ["node", "server.ts"]

@@ -121,6 +121,38 @@ don't end up in the real one:
 docker run --rm --env-file .env -e NAV_DB=/tmp/test.db website-navigator npm test
 ```
 
+## Deploying to Railway
+
+`railway.json` tells Railway to build the Dockerfile and health-check `/`.
+
+1. Merge to `main`, then in Railway: **New Project → Deploy from GitHub repo**.
+2. On the service, **add a volume mounted at `/data`**. Without it every
+   deploy wipes the index. Keep one replica: Railway won't run replicas with a
+   volume anyway, and the rate limits are per instance.
+3. **Variables:**
+   ```
+   LLM_API_KEY=<AI Studio key>
+   NAV_ADMIN_KEY=<long random string>
+   TRUST_PROXY=1
+   ALLOWED_ORIGINS=finance-calculator-tools=https://financefundamentals.app https://www.financefundamentals.app
+   ```
+   `TRUST_PROXY=1` is required here: behind Railway's proxy, every visitor
+   otherwise shares one IP and one rate limit.
+4. **Settings → Networking → Generate Domain.**
+5. Index the site:
+   ```bash
+   curl -X POST https://<domain>/index -H "x-admin-key: $NAV_ADMIN_KEY" \
+     -H "content-type: application/json" \
+     -d '{"site":"finance-calculator-tools","url":"https://financefundamentals.app/"}'
+   ```
+   The crawl runs inside the request. Railway closes a request after 5 minutes
+   with no data, which is plenty for a small site but not for a large one.
+6. Add the script tag to your site, pointing at the new domain.
+
+Railway mounts volumes owned by root. The container starts as root only long
+enough to hand `/data` to the `node` user, then drops privileges, rather than
+following Railway's documented workaround of running everything as root.
+
 ## Customising the launcher
 
 By default you get a small circular help icon in the bottom-right corner. Every

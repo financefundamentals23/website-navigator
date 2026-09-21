@@ -78,13 +78,19 @@ class RateLimited extends Error {
   }
 }
 
-/* X-Forwarded-For is attacker-controlled unless a proxy you run sets it, so it is
- * only trusted when told to. Trusting it blindly lets anyone dodge the per-IP
- * limit by sending a fresh header on every request. */
+/* Behind a proxy the socket address is the proxy's, so every visitor would share
+ * one limit; TRUST_PROXY=1 reads the client from headers instead. Only then:
+ * without a proxy those headers are whatever the caller typed.
+ * X-Real-IP first -- Railway sets it to the client address. Failing that, the
+ * LAST X-Forwarded-For entry: a proxy appends what it saw, so the last entry is
+ * the proxy's word and every entry before it is the visitor's, forgeable per
+ * request to dodge the per-IP limit. */
 function clientIp(req: http.IncomingMessage) {
   if (process.env.TRUST_PROXY === "1") {
-    const first = String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim();
-    if (first) return first;
+    const real = String(req.headers["x-real-ip"] ?? "").trim();
+    if (real) return real;
+    const last = String(req.headers["x-forwarded-for"] ?? "").split(",").pop()!.trim();
+    if (last) return last;
   }
   return req.socket.remoteAddress ?? "unknown";
 }

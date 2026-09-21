@@ -357,6 +357,15 @@ try {
   const wait = Number(over.headers.get("retry-after"));
   assert(wait >= 1 && wait <= 60, `Retry-After should be 1-60s, got ${wait}`);
   assert.equal((await over.json()).retryAfter, wait, "retryAfter in the body must match the header");
+  // Behind an appending proxy the first X-Forwarded-For entry is the visitor's own
+  // text. Forging it must not buy a fresh allowance.
+  assert.equal((await ask("9.9.9.9, 203.0.113.9", cachedQ)).status, 429, "forged first XFF entry dodged the limit");
+  const viaRealIp = await fetch(`http://localhost:${NAV_PORT}/guide`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-real-ip": "203.0.113.9", "x-forwarded-for": "7.7.7.7" },
+    body: JSON.stringify(cachedQ),
+  });
+  assert.equal(viaRealIp.status, 429, "X-Real-IP (set by the proxy) should win over X-Forwarded-For");
   assert.equal((await ask("198.51.100.4", cachedQ)).status, 200, "another visitor must be unaffected");
   ok(`11th question from one IP refused with Retry-After ${wait}s; other IPs unaffected`);
 
