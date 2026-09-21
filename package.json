@@ -11,7 +11,7 @@
     "coverage": "node --env-file-if-exists=.env coverage.ts"
   },
   "engines": {
-    "node": ">=22.6"
+    "node": ">=26"
   },
   "dependencies": {
     "playwright": "^1.63.0"
