@@ -146,3 +146,69 @@ The free tier includes 1 GB of outbound data a month. The widget script is
 7.5 KB gzipped and cached by browsers for an hour, so that covers well over
 100,000 page views. Check **Billing → Reports** after the first day anyway:
 anything above $0.00 means a setting above is off.
+
+## Automatic deploys (GitHub Actions)
+
+`.github/workflows/deploy.yml` runs on every push to `main`: tests first, then
+it uploads the code to the VM over SSH and runs `docker compose up -d --build`.
+It logs in as a dedicated `deploy` user created by hand on the VM. Google's
+guest agent manages SSH keys for accounts it created from metadata, and can
+remove keys added to those by hand; it leaves other accounts alone.
+
+One-time setup. Do it **before** merging the workflow, or the first deploy fails
+(harmlessly; re-run it from the Actions tab afterwards).
+
+**1. A key just for GitHub** (laptop):
+
+```bash
+ssh-keygen -t ed25519 -N "" -C github-actions-deploy -f ~/.ssh/navigator-deploy
+cat ~/.ssh/navigator-deploy.pub      # copy this line for step 2
+```
+
+**2. The `deploy` user, and the app moved to `/opt/navigator`** (VM):
+
+```bash
+sudo useradd -m -s /bin/bash deploy
+sudo usermod -aG docker deploy
+sudo mkdir -p /home/deploy/.ssh
+echo 'PASTE THE .pub LINE HERE' | sudo tee /home/deploy/.ssh/authorized_keys
+sudo chown -R deploy:deploy /home/deploy/.ssh
+sudo chmod 700 /home/deploy/.ssh && sudo chmod 600 /home/deploy/.ssh/authorized_keys
+
+cd ~/navigator && docker compose down         # stops it; the data volume stays
+sudo mv ~/navigator /opt/navigator
+sudo chown -R deploy:deploy /opt/navigator
+sudo chown 1000:1000 /opt/navigator/auth.json  # the container's user, as before
+cd /opt/navigator && sudo -u deploy docker compose up -d
+```
+
+The folder is still called `navigator`, so Compose finds the same data volume
+and the index and cache carry over.
+
+Being in the `docker` group is effectively root on this VM, so treat the
+private key as a root credential.
+
+**3. Pin the VM's identity** (laptop):
+
+```bash
+ssh-keyscan -t ed25519 nav.financefundamentals.app
+```
+
+Compare its fingerprint with the VM's own
+(`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the VM) before trusting
+it. The workflow refuses to deploy to any machine that doesn't match.
+
+**4. GitHub secrets.** Repo → **Settings → Secrets and variables → Actions →
+New repository secret**:
+
+| Name | Value |
+|---|---|
+| `DEPLOY_SSH_KEY` | the whole of `~/.ssh/navigator-deploy` (the private key) |
+| `DEPLOY_KNOWN_HOSTS` | the line printed in step 3 |
+
+Then delete the private key from your laptop, or keep it only in a password
+manager. The Gemini key and the rest of `.env` stay on the VM; GitHub never
+sees them.
+
+The deploy connects to `nav.financefundamentals.app` on port 22, so that DNS
+record has to stay **DNS only**: a Cloudflare-proxied name doesn't carry SSH.
