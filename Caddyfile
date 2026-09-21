@@ -1,0 +1,6 @@
+{$NAV_DOMAIN} {
+	# nav.js goes to every visitor; gzip cuts it roughly 3x, which matters on a
+	# free tier that meters outbound data.
+	encode gzip
+	reverse_proxy app:8787
+}

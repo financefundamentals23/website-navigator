@@ -1,0 +1,36 @@
+# Production on a single VM: the navigator plus Caddy for HTTPS.
+# Your site is served over HTTPS, so browsers refuse to load the widget from a
+# plain-HTTP server -- Caddy gets and renews a Let's Encrypt certificate itself.
+#
+#   docker compose up -d --build
+#
+# Reads .env next to this file (never committed): LLM_API_KEY, NAV_ADMIN_KEY,
+# ALLOWED_ORIGINS, and NAV_DOMAIN -- the hostname pointing at this machine.
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      # Caddy is the proxy in front, so the client IP comes from its headers.
+      TRUST_PROXY: "1"
+    volumes:
+      - navdata:/data
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      NAV_DOMAIN: ${NAV_DOMAIN:?set NAV_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # certificates; losing them means re-issuing
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  navdata:
+  caddy_data:

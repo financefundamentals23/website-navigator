@@ -106,7 +106,7 @@ and their own rate-limit counters.
 Crawl from inside the running container:
 
 ```bash
-docker exec nav node crawl.ts finance-calculator-tools https://financefundamentals.app
+docker exec -u node nav node crawl.ts finance-calculator-tools https://financefundamentals.app
 ```
 
 Secrets come in at run time through `--env-file` and are never copied into
@@ -120,6 +120,10 @@ don't end up in the real one:
 ```bash
 docker run --rm --env-file .env -e NAV_DB=/tmp/test.db website-navigator npm test
 ```
+
+## Deploying to Google Cloud (free)
+
+One always-free e2-micro VM running `compose.yml`, which is the navigator plus Caddy for HTTPS. Step by step in [docs/deploy-gcp.md](docs/deploy-gcp.md).
 
 ## Deploying to Railway
 

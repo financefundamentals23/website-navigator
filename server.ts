@@ -402,7 +402,13 @@ ${
     }
 
     if (url.pathname === "/nav.js") {
-      res.writeHead(200, { "content-type": "application/javascript" });
+      res.writeHead(200, {
+        "content-type": "application/javascript",
+        // Every visitor loads this on every page. Caching it for an hour cuts
+        // repeat downloads, which is what a metered free tier bills for; the
+        // cost is that a new widget version takes up to an hour to reach them.
+        "cache-control": "public, max-age=3600",
+      });
       // The scanner ships ahead of the widget: one file for the host site, one
       // definition of "interactive element" shared with the crawler.
       return res.end(
