@@ -455,4 +455,12 @@ if (import.meta.filename === process.argv[1]) {
     console.log(`navigator on http://localhost:${PORT}`);
     if (!allowlist()) console.warn("ALLOWED_ORIGINS is not set: any website can use any site key.");
   });
+  // As PID 1 in a container, Node ignores SIGTERM unless told otherwise, so
+  // `docker stop` would wait out its 10s and then kill mid-request.
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.on(sig, () => {
+      server.close(() => process.exit(0));
+      server.closeAllConnections();
+    });
+  }
 }

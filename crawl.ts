@@ -278,7 +278,9 @@ export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}
 
   clearSite(site);
   putElements(site, all);
-  return { pages: pages.size, elements: all.length, blocked, signedIn };
+  // Count what is stored: the same link twice on one page is one row.
+  const elements = new Set(all.map((e) => `${e.page}|${e.label}|${e.parent}`)).size;
+  return { pages: pages.size, elements, blocked, signedIn };
 }
 
 if (import.meta.filename === process.argv[1]) {

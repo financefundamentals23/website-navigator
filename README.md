@@ -90,6 +90,37 @@ node server.ts
 ```
 
 
+## Running in Docker
+
+```bash
+docker build -t website-navigator .
+docker run -d --name nav -p 8787:8787 --env-file .env -v navdata:/data website-navigator
+```
+
+The index and answer cache are one SQLite file at `/data/nav.db`, so **the
+volume is not optional**: without it the database is wiped every time the
+container is replaced, and every site has to be re-crawled. For the same
+reason, run one instance. Two containers would each have their own database
+and their own rate-limit counters.
+
+Crawl from inside the running container:
+
+```bash
+docker exec nav node crawl.ts finance-calculator-tools https://financefundamentals.app
+```
+
+Secrets come in at run time through `--env-file` and are never copied into
+the image (`.dockerignore` excludes `.env` and `auth.json`). To crawl
+signed in, mount the session file, e.g.
+`-v $PWD/auth.json:/app/auth.json:ro`.
+
+Run the tests in the same image, against a throwaway database so test sites
+don't end up in the real one:
+
+```bash
+docker run --rm --env-file .env -e NAV_DB=/tmp/test.db website-navigator npm test
+```
+
 ## Customising the launcher
 
 By default you get a small circular help icon in the bottom-right corner. Every
