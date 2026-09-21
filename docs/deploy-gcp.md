@@ -185,6 +185,14 @@ cd /opt/navigator && sudo -u deploy docker compose up -d
 The folder is still called `navigator`, so Compose finds the same data volume
 and the index and cache carry over.
 
+From now on, run Compose from `/opt/navigator` **as `deploy`**. `.env` is
+readable only by that user, and Compose needs it. For example, a crawl:
+
+```bash
+cd /opt/navigator
+sudo -u deploy docker compose exec -u node app node crawl.ts finance-calculator-tools https://financefundamentals.app/ --auth /app/auth.json
+```
+
 Being in the `docker` group is effectively root on this VM, so treat the
 private key as a root credential.
 
