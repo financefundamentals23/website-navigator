@@ -318,6 +318,20 @@ try {
   assert.equal(def.right, "20px");
   ok(`icon-only, bottom-right, labelled "${def.label}"`);
 
+  // The panel has a visible close button, not just the Escape key.
+  await p2.click("#wnav-host .launch");
+  await p2.click('#wnav-host button[aria-label="Close"]');
+  const closed = await p2.evaluate(() => {
+    const sr = document.querySelector("#wnav-host")!.shadowRoot!;
+    return {
+      panelOpen: sr.querySelector(".panel")!.classList.contains("open"),
+      launcherShown: (sr.querySelector(".anchor") as HTMLElement).style.display !== "none",
+      focusOnLauncher: sr.activeElement === sr.querySelector(".launch"),
+    };
+  });
+  assert.deepEqual(closed, { panelOpen: false, launcherShown: true, focusOnLauncher: true });
+  ok("close button hides the panel, brings the launcher back, returns focus to it");
+
   // Host site takes over: its own trigger, its own corner, its own colour.
   await p2.goto(`http://localhost:${SITE_PORT}/custom`);
   const custom = await p2.evaluate(() => {
