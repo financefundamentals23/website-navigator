@@ -89,6 +89,31 @@ function clientIp(req: http.IncomingMessage) {
   return req.socket.remoteAddress ?? "unknown";
 }
 
+/* Which origins may use each site's navigator:
+ *   ALLOWED_ORIGINS="acme=https://acme.com https://www.acme.com;blog=https://blog.acme.com"
+ * Stops another website from embedding your site key and spending your quota
+ * through its own visitors' browsers. It does NOT stop scripts: Origin is just a
+ * header, and curl can send any value. Rate limits are what cover that.
+ * Unset means every origin is allowed -- fine locally, warned about at startup.
+ * Read per request, so it can change without a restart. */
+function allowlist() {
+  const raw = process.env.ALLOWED_ORIGINS?.trim();
+  if (!raw) return null;
+  const bySite = new Map<string, Set<string>>();
+  for (const entry of raw.split(";")) {
+    const [site, origins = ""] = entry.split("=");
+    if (!site?.trim()) continue;
+    bySite.set(
+      site.trim(),
+      new Set(origins.split(/[\s,]+/).filter(Boolean).map((o) => o.toLowerCase().replace(/\/$/, ""))),
+    );
+  }
+  return bySite;
+}
+
+const originOf = (req: http.IncomingMessage) =>
+  String(req.headers.origin ?? "").toLowerCase().replace(/\/$/, "");
+
 const SCHEMA = {
   type: "object",
   properties: {
@@ -316,12 +341,24 @@ function readBody(req: http.IncomingMessage): Promise<any> {
 }
 
 export const server = http.createServer(async (req, res) => {
-  // The widget runs on the customer's origin, so every call here is cross-origin.
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const url = new URL(req.url!, "http://x");
+  const origin = originOf(req);
+  const allowed = allowlist();
+
+  // /guide echoes back only an allowed origin; everything else is public.
+  if (url.pathname === "/guide") {
+    // The preflight carries no body, so no site: pass any origin listed for any
+    // site, and let the POST itself check the specific one.
+    const known = !allowed || [...allowed.values()].some((set) => set.has(origin));
+    if (known && origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
   res.setHeader("Access-Control-Allow-Headers", "content-type, x-admin-key");
   if (req.method === "OPTIONS") return res.writeHead(204).end();
-
-  const url = new URL(req.url!, "http://x");
 
   try {
     // Opening the server root used to 404, which reads like a broken server.
@@ -366,7 +403,14 @@ ${
       // Before reading the body: a flood should cost us as little as possible.
       const ipWait = perIp(clientIp(req));
       if (ipWait) throw new RateLimited(ipWait, "Too many questions -- give it a minute.");
-      const out = await guide(await readBody(req));
+      const body = await readBody(req);
+      if (allowed && !allowed.get(String(body.site ?? ""))?.has(origin)) {
+        res.writeHead(403, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ error: `origin "${origin || "(none)"}" is not allowed for site "${body.site}"` }),
+        );
+      }
+      const out = await guide(body);
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify(out));
     }
@@ -400,5 +444,8 @@ ${
 });
 
 if (import.meta.filename === process.argv[1]) {
-  server.listen(PORT, () => console.log(`navigator on http://localhost:${PORT}`));
+  server.listen(PORT, () => {
+    console.log(`navigator on http://localhost:${PORT}`);
+    if (!allowlist()) console.warn("ALLOWED_ORIGINS is not set: any website can use any site key.");
+  });
 }

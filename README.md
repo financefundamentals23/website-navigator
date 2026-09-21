@@ -130,6 +130,20 @@ learn — set them on `:root` and they apply:
 the text in the question box. The button is icon-only, so `data-label` is what
 screen readers announce — keep it meaningful.
 
+## Allowed origins
+
+Register which domains may use each site key, so another website can't embed
+yours and spend your quota:
+
+```bash
+ALLOWED_ORIGINS="acme=https://acme.com https://www.acme.com;blog=https://blog.acme.com"
+```
+
+Anything else gets a 403. Unset, every origin is allowed and the server warns
+at startup — fine locally, not in production. This stops other *websites*, not
+scripts: `Origin` is just a header and curl can send anything. The rate limits
+are what cover scripts.
+
 ## Rate limits
 
 `POST /guide` answers 429 with a `Retry-After` once either limit is hit, and

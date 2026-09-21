@@ -347,6 +347,43 @@ try {
   assert.equal(hit.status, 200, "the site cap must not block answers already cached");
   ok("site cap refuses model calls but still serves cached answers");
 
+  console.log("\n9. origin allowlist");
+  process.env.ALLOWED_ORIGINS = `${SITE}=http://localhost:${SITE_PORT}`;
+  let ipN = 0; // a fresh address per call, so the per-IP limit stays out of the way
+  const from = (origin: string | null, site = SITE) =>
+    fetch(`http://localhost:${NAV_PORT}/guide`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": `10.9.0.${++ipN}`,
+        ...(origin ? { origin } : {}),
+      },
+      body: JSON.stringify({ site, query: "where is dark mode?", url: "/" }),
+    });
+
+  const good = await from(`http://localhost:${SITE_PORT}`);
+  assert.equal(good.status, 200, "the registered origin should be served");
+  assert.equal(good.headers.get("access-control-allow-origin"), `http://localhost:${SITE_PORT}`);
+
+  const evil = await from("https://evil.example");
+  assert.equal(evil.status, 403, "an unregistered origin must be refused");
+  assert.equal(evil.headers.get("access-control-allow-origin"), null, "no CORS grant for it either");
+
+  assert.equal((await from(null)).status, 403, "no Origin at all must be refused once a list is set");
+  assert.equal(
+    (await from(`http://localhost:${SITE_PORT}`, "someone-else")).status,
+    403,
+    "a registered origin must not be able to use another site's key",
+  );
+
+  const pre = await fetch(`http://localhost:${NAV_PORT}/guide`, {
+    method: "OPTIONS",
+    headers: { origin: `http://localhost:${SITE_PORT}` },
+  });
+  assert.equal(pre.headers.get("access-control-allow-origin"), `http://localhost:${SITE_PORT}`);
+  delete process.env.ALLOWED_ORIGINS;
+  ok("registered origin served; foreign origin, missing origin and cross-site key refused");
+
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
   siteServer.close();
