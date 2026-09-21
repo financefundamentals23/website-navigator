@@ -194,6 +194,7 @@ learn — set them on `:root` and they apply:
 ```css
 :root {
   --wnav-accent: #132135;  /* button, spotlight ring and tooltip */
+  --wnav-accent-2: #5cb6f9; /* far end of the panel's gradient */
   --wnav-bg:     #fff;     /* question panel background */
   --wnav-fg:     #1b1b1f;  /* question panel text */
   --wnav-size:   52px;     /* icon button size */
@@ -205,7 +206,8 @@ learn — set them on `:root` and they apply:
 ### Wording
 
 `data-label` sets the button's accessible name and tooltip, `data-placeholder`
-the text in the question box. The button is icon-only, so `data-label` is what
+the text in the question box. `data-title` sets the panel heading and `data-note` the
+short note under it explaining that it only helps visitors find their way. The button is icon-only, so `data-label` is what
 screen readers announce — keep it meaningful.
 
 ## If the server is down
