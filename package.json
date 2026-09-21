@@ -7,10 +7,11 @@
     "start": "node --env-file-if-exists=.env server.ts",
     "crawl": "node --env-file-if-exists=.env crawl.ts",
     "test": "node --env-file-if-exists=.env test.ts",
-    "dev": "node --env-file-if-exists=.env dev.ts"
+    "dev": "node --env-file-if-exists=.env dev.ts",
+    "coverage": "node --env-file-if-exists=.env coverage.ts"
   },
   "engines": {
-    "node": ">=22.6"
+    "node": ">=26"
   },
   "dependencies": {
     "playwright": "^1.63.0"

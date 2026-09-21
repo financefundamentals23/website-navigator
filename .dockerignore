@@ -1,0 +1,10 @@
+# Secrets never go into the image -- pass them at run time with --env-file.
+.env
+auth.json
+*.auth.json
+# Local state and build noise.
+node_modules
+*.db
+.git
+.claude
+docs

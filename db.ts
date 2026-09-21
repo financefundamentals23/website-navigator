@@ -20,18 +20,26 @@ db.exec(`
   );
 `);
 
-export type El = { page: string; label: string; role: string; parent: string };
+// Added after the first release; existing databases get it on startup.
+// 1 = only seen while signed in.
+try {
+  db.exec("ALTER TABLE elements ADD COLUMN auth INTEGER NOT NULL DEFAULT 0");
+} catch {
+  // column already there
+}
+
+export type El = { page: string; label: string; role: string; parent: string; auth?: number };
 
 export function putElements(site: string, els: El[]) {
   const ins = db.prepare(
-    `INSERT OR REPLACE INTO elements (site, page, label, role, parent) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO elements (site, page, label, role, parent, auth) VALUES (?, ?, ?, ?, ?, ?)`,
   );
-  for (const e of els) ins.run(site, e.page, e.label, e.role, e.parent);
+  for (const e of els) ins.run(site, e.page, e.label, e.role, e.parent, e.auth ?? 0);
 }
 
 export function getElements(site: string): El[] {
   return db
-    .prepare(`SELECT page, label, role, parent FROM elements WHERE site = ?`)
+    .prepare(`SELECT page, label, role, parent, auth FROM elements WHERE site = ?`)
     .all(site) as El[];
 }
 

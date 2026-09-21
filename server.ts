@@ -42,6 +42,84 @@ async function complete(system: string, user: string, schema: object) {
   return JSON.parse(text);
 }
 
+/* Rate limits. Two different jobs:
+ *   per IP   -- a visitor asking more than ~10 questions a minute is not a visitor.
+ *               Counts every /guide call, cached or not.
+ *   per site -- caps model calls (cache misses) for one site, since misses are
+ *               what spend quota. Stops one busy or abused site draining it all.
+ * Limits are read per call so they can be tuned without a restart.
+ * ponytail: fixed windows in process memory -- per server instance, and a burst
+ * straddling a window edge can reach 2x. Move to Redis when running >1 instance. */
+function limiter(max: () => number, windowMs = 60_000) {
+  const hits = new Map<string, { n: number; reset: number }>();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [k, v] of hits) if (v.reset <= now) hits.delete(k);
+  }, windowMs).unref();
+
+  // Returns 0 when allowed, otherwise the seconds until the window resets.
+  return (key: string) => {
+    const now = Date.now();
+    let h = hits.get(key);
+    if (!h || h.reset <= now) hits.set(key, (h = { n: 0, reset: now + windowMs }));
+    h.n++;
+    return h.n <= max() ? 0 : Math.max(1, Math.ceil((h.reset - now) / 1000));
+  };
+}
+
+const perIp = limiter(() => Number(process.env.RATE_IP_PER_MIN ?? 10));
+const perSite = limiter(() => Number(process.env.RATE_SITE_PER_MIN ?? 60));
+
+class RateLimited extends Error {
+  retryAfter: number;
+  constructor(retryAfter: number, message: string) {
+    super(message);
+    this.retryAfter = retryAfter;
+  }
+}
+
+/* Behind a proxy the socket address is the proxy's, so every visitor would share
+ * one limit; TRUST_PROXY=1 reads the client from headers instead. Only then:
+ * without a proxy those headers are whatever the caller typed.
+ * X-Real-IP first -- Railway sets it to the client address. Failing that, the
+ * LAST X-Forwarded-For entry: a proxy appends what it saw, so the last entry is
+ * the proxy's word and every entry before it is the visitor's, forgeable per
+ * request to dodge the per-IP limit. */
+function clientIp(req: http.IncomingMessage) {
+  if (process.env.TRUST_PROXY === "1") {
+    const real = String(req.headers["x-real-ip"] ?? "").trim();
+    if (real) return real;
+    const last = String(req.headers["x-forwarded-for"] ?? "").split(",").pop()!.trim();
+    if (last) return last;
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+/* Which origins may use each site's navigator:
+ *   ALLOWED_ORIGINS="acme=https://acme.com https://www.acme.com;blog=https://blog.acme.com"
+ * Stops another website from embedding your site key and spending your quota
+ * through its own visitors' browsers. It does NOT stop scripts: Origin is just a
+ * header, and curl can send any value. Rate limits are what cover that.
+ * Unset means every origin is allowed -- fine locally, warned about at startup.
+ * Read per request, so it can change without a restart. */
+function allowlist() {
+  const raw = process.env.ALLOWED_ORIGINS?.trim();
+  if (!raw) return null;
+  const bySite = new Map<string, Set<string>>();
+  for (const entry of raw.split(";")) {
+    const [site, origins = ""] = entry.split("=");
+    if (!site?.trim()) continue;
+    bySite.set(
+      site.trim(),
+      new Set(origins.split(/[\s,]+/).filter(Boolean).map((o) => o.toLowerCase().replace(/\/$/, ""))),
+    );
+  }
+  return bySite;
+}
+
+const originOf = (req: http.IncomingMessage) =>
+  String(req.headers.origin ?? "").toLowerCase().replace(/\/$/, "");
+
 const SCHEMA = {
   type: "object",
   properties: {
@@ -81,6 +159,11 @@ Rules:
   or section that contains it. Stopping at "go to the calculators page" is not an
   answer; keep going until the final step is the control itself.
 - Only emit steps for things that exist in the index or on the current page.
+- Rows marked signed_in_only exist only for signed-in visitors. If the visitor's
+  current page shows a sign-in control, they are signed out: make that sign-in
+  control the first step, then continue the path as usual, still ending on what
+  they asked for. Say in answer that they will need to sign in. Never claim the
+  site lacks a feature just because it is signed_in_only.
 - If the site genuinely has no such feature, return an empty steps array, say so in
   answer, and set confidence low.
 - NEVER route someone to a destructive or irreversible action (delete, remove, close,
@@ -146,9 +229,11 @@ function ancestry(rows: El[]) {
 const asTsv = (rows: El[]) => {
   const chainOf = ancestry(rows);
   return (
-    `page\tlabel\trole\topen_these_first\n` +
+    `page\tlabel\trole\topen_these_first\tsigned_in_only\n` +
     rows
-      .map((r) => [r.page, r.label, r.role, chainOf(r.page, r.label).join(" > ")].join("\t"))
+      .map((r) =>
+        [r.page, r.label, r.role, chainOf(r.page, r.label).join(" > "), r.auth ? "yes" : ""].join("\t"),
+      )
       .join("\n")
   );
 };
@@ -174,6 +259,10 @@ async function guide(body: any) {
 
   const live = (body.digest ?? []).slice(0, 200);
   const digest = live.map((d: any) => `${d.label}\t${d.role}`).join("\n");
+
+  // Checked here, after the cache and the index lookup: only a real model call counts.
+  const siteWait = perSite(site);
+  if (siteWait) throw new RateLimited(siteWait, "This site is getting a lot of questions right now.");
 
   const out = await complete(
     SYSTEM,
@@ -265,12 +354,24 @@ function readBody(req: http.IncomingMessage): Promise<any> {
 }
 
 export const server = http.createServer(async (req, res) => {
-  // The widget runs on the customer's origin, so every call here is cross-origin.
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const url = new URL(req.url!, "http://x");
+  const origin = originOf(req);
+  const allowed = allowlist();
+
+  // /guide echoes back only an allowed origin; everything else is public.
+  if (url.pathname === "/guide") {
+    // The preflight carries no body, so no site: pass any origin listed for any
+    // site, and let the POST itself check the specific one.
+    const known = !allowed || [...allowed.values()].some((set) => set.has(origin));
+    if (known && origin) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
   res.setHeader("Access-Control-Allow-Headers", "content-type, x-admin-key");
   if (req.method === "OPTIONS") return res.writeHead(204).end();
-
-  const url = new URL(req.url!, "http://x");
 
   try {
     // Opening the server root used to 404, which reads like a broken server.
@@ -302,11 +403,27 @@ ${
 
     if (url.pathname === "/nav.js") {
       res.writeHead(200, { "content-type": "application/javascript" });
-      return res.end(readFileSync(new URL("./nav.js", import.meta.url), "utf8"));
+      // The scanner ships ahead of the widget: one file for the host site, one
+      // definition of "interactive element" shared with the crawler.
+      return res.end(
+        readFileSync(new URL("./scan.js", import.meta.url), "utf8") +
+          "\n" +
+          readFileSync(new URL("./nav.js", import.meta.url), "utf8"),
+      );
     }
 
     if (url.pathname === "/guide" && req.method === "POST") {
-      const out = await guide(await readBody(req));
+      // Before reading the body: a flood should cost us as little as possible.
+      const ipWait = perIp(clientIp(req));
+      if (ipWait) throw new RateLimited(ipWait, "Too many questions -- give it a minute.");
+      const body = await readBody(req);
+      if (allowed && !allowed.get(String(body.site ?? ""))?.has(origin)) {
+        res.writeHead(403, { "content-type": "application/json" });
+        return res.end(
+          JSON.stringify({ error: `origin "${origin || "(none)"}" is not allowed for site "${body.site}"` }),
+        );
+      }
+      const out = await guide(body);
       res.writeHead(200, { "content-type": "application/json" });
       return res.end(JSON.stringify(out));
     }
@@ -325,11 +442,31 @@ ${
 
     res.writeHead(404).end("not found");
   } catch (err) {
+    if (err instanceof RateLimited) {
+      // retryAfter goes in the body too: a cross-origin widget cannot read the
+      // Retry-After header without an extra CORS expose.
+      res.writeHead(429, {
+        "content-type": "application/json",
+        "retry-after": String(err.retryAfter),
+      });
+      return res.end(JSON.stringify({ error: err.message, retryAfter: err.retryAfter }));
+    }
     res.writeHead(400, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: (err as Error).message }));
   }
 });
 
 if (import.meta.filename === process.argv[1]) {
-  server.listen(PORT, () => console.log(`navigator on http://localhost:${PORT}`));
+  server.listen(PORT, () => {
+    console.log(`navigator on http://localhost:${PORT}`);
+    if (!allowlist()) console.warn("ALLOWED_ORIGINS is not set: any website can use any site key.");
+  });
+  // As PID 1 in a container, Node ignores SIGTERM unless told otherwise, so
+  // `docker stop` would wait out its 10s and then kill mid-request.
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    process.on(sig, () => {
+      server.close(() => process.exit(0));
+      server.closeAllConnections();
+    });
+  }
 }
