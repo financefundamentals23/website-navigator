@@ -2,3 +2,6 @@ node_modules/
 nav.db
 *.db
 .env
+# a saved login -- whoever has it is signed in
+auth.json
+*.auth.json

@@ -193,12 +193,19 @@ async function crawlPage(page: Page, url: string, origin: string) {
   return { els, next };
 }
 
-export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}) {
-  const { maxPages = 40, storageState, headless = true, respectRobots = true } = opts;
-  const origin = new URL(startUrl).origin;
-  const allowed = respectRobots ? await robotsGate(origin) : () => true;
-  let blocked = 0;
+/* A crawl follows every same-origin link, and following a logout link ends the
+ * signed-in session partway through. Never navigate to one. */
+const LOGOUT = /log-?out|sign-?out|log-?off/i;
 
+type WalkOpts = {
+  maxPages: number;
+  headless: boolean;
+  allowed: (path: string) => boolean;
+  storageState?: string;
+};
+
+async function walk(startUrl: string, { maxPages, headless, allowed, storageState }: WalkOpts) {
+  const origin = new URL(startUrl).origin;
   const browser = await chromium.launch({ headless });
   const ctx = await browser.newContext(storageState ? { storageState } : {});
   await ctx.addInitScript({ content: SCAN_SRC }); // same scanner the widget uses
@@ -206,22 +213,23 @@ export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}
 
   const queue = [startUrl];
   const done = new Set<string>();
-  const all: El[] = [];
+  const els: El[] = [];
+  let blocked = 0;
 
   try {
     while (queue.length && done.size < maxPages) {
       const url = queue.shift()!;
       const key = new URL(url).pathname;
-      if (done.has(key)) continue;
+      if (done.has(key) || LOGOUT.test(key)) continue;
       if (!allowed(key)) {
         blocked++;
         continue;
       }
       done.add(key);
       try {
-        const { els, next } = await crawlPage(page, url, origin);
-        all.push(...els);
-        for (const n of next) if (!done.has(new URL(n).pathname)) queue.push(n);
+        const res = await crawlPage(page, url, origin);
+        els.push(...res.els);
+        for (const n of res.next) if (!done.has(new URL(n).pathname)) queue.push(n);
       } catch (err) {
         console.warn(`  skipped ${url}: ${(err as Error).message}`);
       }
@@ -229,12 +237,48 @@ export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}
   } finally {
     await browser.close();
   }
+  return { els, pages: done, blocked };
+}
+
+export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}) {
+  const { maxPages = 40, storageState, headless = true, respectRobots = true } = opts;
+  const allowed = respectRobots ? await robotsGate(new URL(startUrl).origin) : () => true;
+
+  const out = await walk(startUrl, { maxPages, headless, allowed });
+  const all: El[] = out.els;
+  const pages = new Set(out.pages);
+  let blocked = out.blocked;
+  let signedIn = 0;
+
+  if (storageState) {
+    /* Crawl both ways. Signed in only would lose whatever exists only when
+     * signed out -- the sign-in link itself, for a start. Signed out only can't
+     * see the account area at all, which is how a real site got told it "does
+     * not have" a setting that sits on its profile page. Rows that appear only
+     * in the signed-in pass are marked, so the guide can say "sign in first". */
+    const inn = await walk(startUrl, { maxPages, headless, allowed, storageState });
+    const key = (e: El) => `${e.page}|${e.label}|${e.parent}`;
+    const seenOut = new Set(all.map(key));
+    for (const e of inn.els) {
+      if (seenOut.has(key(e))) continue;
+      seenOut.add(key(e));
+      all.push({ ...e, auth: 1 });
+      signedIn++;
+    }
+    for (const p of inn.pages) pages.add(p);
+    blocked = Math.max(blocked, inn.blocked);
+    if (!signedIn) {
+      console.warn(
+        "  the signed-in crawl found nothing the signed-out one didn't -- has the session expired? Re-run: node login.ts <url>",
+      );
+    }
+  }
 
   if (blocked) console.log(`  skipped ${blocked} path(s) disallowed by robots.txt`);
 
   clearSite(site);
   putElements(site, all);
-  return { pages: done.size, elements: all.length, blocked };
+  return { pages: pages.size, elements: all.length, blocked, signedIn };
 }
 
 if (import.meta.filename === process.argv[1]) {
@@ -247,5 +291,8 @@ if (import.meta.filename === process.argv[1]) {
   const res = await crawl(site, url, {
     storageState: authFlag > -1 ? process.argv[authFlag + 1] : undefined,
   });
-  console.log(`indexed ${res.elements} elements across ${res.pages} pages for "${site}"`);
+  console.log(
+    `indexed ${res.elements} elements across ${res.pages} pages for "${site}"` +
+      (res.signedIn ? ` (${res.signedIn} only when signed in)` : ""),
+  );
 }

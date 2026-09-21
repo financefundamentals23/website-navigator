@@ -43,7 +43,7 @@ the host page or block rendering.
 - Timeout on `/guide` (5s) and fail silently closed.
 - Document the `connect-src` entry sites need if they run a strict CSP.
 
-### Auth-gated pages are a correctness problem, not a coverage one
+### ~~Auth-gated pages are a correctness problem~~ — done (`login.ts` + two-pass crawl)
 
 Verified on a real site: logged out, the crawler could not see the profile form
 and the model confidently answered *"the site does not have a saved income

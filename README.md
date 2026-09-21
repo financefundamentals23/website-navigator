@@ -61,12 +61,23 @@ Index the site (re-run after deploys that move navigation):
 node crawl.ts acme https://acme.com
 ```
 
-For anything behind a login, hand the crawler a Playwright auth state — without
-it, every settings page is invisible:
+For anything behind a login, save a signed-in session once, then crawl with it:
 
 ```bash
-node crawl.ts acme https://acme.com --auth ./auth.json
+node login.ts https://acme.com          # sign in in the window, press Enter
+node crawl.ts acme https://acme.com --auth auth.json
 ```
+
+The crawl then runs twice, signed out and signed in. Anything that only appears
+signed in is marked, and a signed-out visitor asking for it is routed through
+sign-in rather than told the feature doesn't exist. The crawler never follows
+logout links.
+
+`auth.json` is a live login: anyone holding it is signed in as that account.
+It's gitignored. Use a test account, and re-run `login.ts` when the crawl
+warns the session has expired. Sign-in providers that block automated browsers
+(Google often does) need an email/password login for this.
+
 
 Run the server, then drop the tag into the site:
 

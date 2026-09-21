@@ -153,6 +153,11 @@ Rules:
   or section that contains it. Stopping at "go to the calculators page" is not an
   answer; keep going until the final step is the control itself.
 - Only emit steps for things that exist in the index or on the current page.
+- Rows marked signed_in_only exist only for signed-in visitors. If the visitor's
+  current page shows a sign-in control, they are signed out: make that sign-in
+  control the first step, then continue the path as usual, still ending on what
+  they asked for. Say in answer that they will need to sign in. Never claim the
+  site lacks a feature just because it is signed_in_only.
 - If the site genuinely has no such feature, return an empty steps array, say so in
   answer, and set confidence low.
 - NEVER route someone to a destructive or irreversible action (delete, remove, close,
@@ -218,9 +223,11 @@ function ancestry(rows: El[]) {
 const asTsv = (rows: El[]) => {
   const chainOf = ancestry(rows);
   return (
-    `page\tlabel\trole\topen_these_first\n` +
+    `page\tlabel\trole\topen_these_first\tsigned_in_only\n` +
     rows
-      .map((r) => [r.page, r.label, r.role, chainOf(r.page, r.label).join(" > ")].join("\t"))
+      .map((r) =>
+        [r.page, r.label, r.role, chainOf(r.page, r.label).join(" > "), r.auth ? "yes" : ""].join("\t"),
+      )
       .join("\n")
   );
 };

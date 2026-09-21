@@ -10,7 +10,7 @@ import { extname, join, basename, resolve } from "node:path";
 import { crawl } from "./crawl.ts";
 
 const folder = resolve(process.argv[2] ?? ".");
-const site = process.argv[3] ?? basename(folder);
+const site = (process.argv[3]?.startsWith("--") ? undefined : process.argv[3]) ?? basename(folder);
 const NAV = Number(process.env.PORT ?? 8787);
 const SITE = NAV + 1;
 
@@ -51,6 +51,10 @@ await new Promise<void>((r) => navServer.listen(NAV, r));
 
 console.log(`serving ${folder} on http://localhost:${SITE} (widget injected)`);
 console.log(`indexing as "${site}"...`);
-const res = await crawl(site, `http://localhost:${SITE}/`);
+// --auth auth.json: also crawl signed in (make the file with login.ts)
+const authAt = process.argv.indexOf("--auth");
+const res = await crawl(site, `http://localhost:${SITE}/`, {
+  storageState: authAt > -1 ? process.argv[authAt + 1] : undefined,
+});
 console.log(`indexed ${res.elements} elements across ${res.pages} pages`);
 console.log(`\n  open http://localhost:${SITE} and click "Find anything"\n`);
