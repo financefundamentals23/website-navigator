@@ -67,11 +67,13 @@
 
     /* Match by what the element says, never by a stored CSS path -- selectors break
      * on the next deploy, visible labels usually don't. */
-    function find(step) {
+    const find = (step) => bestMatch(candidates(), step);
+
+    function bestMatch(list, step) {
       const want = step.label.toLowerCase().trim();
       let best = null;
       let bestScore = 0;
-      for (const el of candidates()) {
+      for (const el of list) {
         const have = S.nameOf(el).toLowerCase();
         if (!have) continue;
         let score = 0;
@@ -92,6 +94,27 @@
         }
       }
       return best;
+    }
+
+    /* The step's element is on this page but hidden: a collapsed menu, a closed
+     * <details>, an off-canvas side rail. When the page says which control
+     * reveals it -- aria-controls on a button marked aria-expanded="false", or
+     * the summary of a closed <details> -- point at that control first. */
+    function revealer(step) {
+      const hidden = bestMatch(
+        S.all().filter((el) => !S.isVisible(el) && !root.contains(el) && !host.contains(el)),
+        step,
+      );
+      if (!hidden) return null;
+      const details = hidden.closest("details:not([open])");
+      const summary = details?.querySelector(":scope > summary");
+      if (summary && S.isVisible(summary)) return summary;
+      for (const el of candidates()) {
+        if (el.getAttribute("aria-expanded") !== "false") continue;
+        const ids = (el.getAttribute("aria-controls") || "").split(/\s+/).filter(Boolean);
+        if (ids.some((id) => el.getRootNode().getElementById?.(id)?.contains(hidden))) return el;
+      }
+      return null;
     }
 
     // Not the step itself: a link to the page the step is on. A detour.
@@ -349,7 +372,7 @@
       at = 0,
       query = "",
       target = null,
-      viaLink = false, // target is a detour link, not the step
+      detour = null, // "link" or "reveal" when the target is on the way to the step, not the step
       poll = null,
       recovered = false;
 
@@ -388,18 +411,21 @@
       requestAnimationFrame(track);
     })();
 
-    function show(step, el, isLink) {
+    function show(step, el, kind = null) {
       target = el;
-      viaLink = isLink;
+      detour = kind;
       place(); // before revealing, or it flashes at the previous step's position
       ring.classList.add("on");
       tip.classList.add("on");
       tip.querySelector("b").textContent = `Step ${at + 1} of ${steps.length}`;
       // Say so when it's a detour; the step's own hint over a nav link reads as
       // "the thing you want is here", which it isn't.
-      tip.querySelector("span").textContent = isLink
-        ? `Go here first -- "${step.label}" is on that page.`
-        : step.hint || `Click "${step.label}"`;
+      tip.querySelector("span").textContent =
+        kind === "link"
+          ? `Go here first -- "${step.label}" is on that page.`
+          : kind === "reveal"
+            ? `Open this first -- "${step.label}" is inside.`
+            : step.hint || `Click "${step.label}"`;
       target.scrollIntoView({ block: "center", behavior: "smooth" });
     }
 
@@ -420,18 +446,25 @@
       const step = steps[at];
       const t0 = Date.now();
       target = null;
-      viaLink = false;
+      detour = null;
 
-      // The real element always wins, even after a detour link has been offered.
+      // The real element always wins, even after a detour has been offered.
       const tick = () => {
         const el = find(step);
         if (el) {
-          show(step, el, false);
+          show(step, el);
           return true;
         }
-        if (!viaLink && Date.now() - t0 > LINK_AFTER_MS) {
+        // Hidden right here, behind a control that says it reveals it: no need
+        // to wait -- the page has told us exactly what to open.
+        const opener = revealer(step);
+        if (opener) {
+          if (target !== opener) show(step, opener, "reveal");
+          return false;
+        }
+        if (detour !== "link" && Date.now() - t0 > LINK_AFTER_MS) {
           const link = linkTo(step);
-          if (link) show(step, link, true);
+          if (link) show(step, link, "link");
         }
         return false;
       };
@@ -441,7 +474,7 @@
         if (tick()) return clearInterval(poll);
         // With a detour on offer the visitor has a way forward, so keep watching
         // for the real thing. With nothing, give up after a while and re-ask.
-        if (!viaLink && Date.now() - t0 > 6000) {
+        if (!detour && Date.now() - t0 > 6000) {
           clearInterval(poll);
           recover(step);
         }
@@ -472,8 +505,9 @@
           if (!target || !steps.length) return;
           const hit = e.target === target || target.contains(e.target) || e.target.contains(target);
           if (!hit) return;
-          // Following a detour link brings the visitor to the step; it isn't the step.
-          if (!viaLink) at++;
+          // A detour (a link to the step's page, or the menu hiding it) leads to
+          // the step; it isn't the step.
+          if (!detour) at++;
           target = null;
           ring.classList.remove("on");
           tip.classList.remove("on");

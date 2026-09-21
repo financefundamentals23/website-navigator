@@ -68,6 +68,11 @@
     if (el.tagName === "OPTION") return true; // no box of its own, still selectable
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return false;
+    // Off-canvas: slid out sideways, the way collapsed side rails and closed
+    // mobile drawers usually are. Still sized and "visible" by every other
+    // test, so the spotlight used to land off the edge of the screen. Only
+    // sideways: below the fold is fine, scrolling brings it into view.
+    if (r.right <= 0 || r.left >= innerWidth) return false;
     const s = getComputedStyle(el);
     return s.visibility !== "hidden" && s.display !== "none" && s.opacity !== "0";
   }
