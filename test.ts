@@ -63,6 +63,14 @@ const pages: Record<string, string> = {
   // In <head>, before the element data-trigger points at exists.
   "/head": `<!doctype html><html><head>${widgetTag(`data-trigger="#late"`)}</head>
     <body><button id="late">Help</button></body></html>`,
+  // Check 12: the field renders a second after load (like a signed-in profile
+  // waiting on Firebase), and a link to another page carrying the same label
+  // is already on screen.
+  "/late": `<!doctype html><html><body><a href="/settings">Settings page</a><div id="slot"></div>
+    <script>setTimeout(() => { slot.innerHTML = '<label for="lf">Late field</label><input id="lf">'; }, 1000)</script>
+    ${widgetTag("")}</body></html>`,
+  // Check 12: the step genuinely lives on another page; only a link leads there.
+  "/detour": `<!doctype html><html><body><a href="/settings">Settings page</a>${widgetTag("")}</body></html>`,
   // A host site that places and styles the trigger itself.
   "/custom": `<!doctype html><html><head><style>:root{--wnav-accent:green}</style></head>
 <body><h1>Custom</h1><button id="myHelp">Need a hand?</button>
@@ -567,6 +575,55 @@ try {
     ok(`signed-out visitor routed in: ${g11.steps.map((s: any) => s.label).join(" -> ")} ("${g11.answer}")`);
   }
   appServer.close();
+
+  console.log("\n12. late-rendering targets and detours");
+  const seed = (q: string, steps: object[]) =>
+    db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+      SITE, q, JSON.stringify({ answer: "", confidence: 0.9, steps }), Date.now());
+  // Both claim another page, exactly as the server did for "Liquid savings (S)".
+  seed("late field", [{ label: "Late field", role: "input", page: "/settings", hint: "Fill it in" }]);
+  seed("detour please", [{ label: "Appearance", role: "summary", page: "/settings", hint: "Open Appearance" }]);
+
+  const b5 = await chromium.launch();
+  const tipOf = (p: import("playwright").Page) =>
+    p.evaluate(() => {
+      const sr = document.querySelector("#wnav-host")!.shadowRoot!;
+      const r = sr.querySelector(".ring") as HTMLElement;
+      return {
+        on: r.classList.contains("on"),
+        x: parseFloat(r.style.left), y: parseFloat(r.style.top),
+        step: sr.querySelector(".tip b")!.textContent, hint: sr.querySelector(".tip span")!.textContent,
+      };
+    });
+
+  // The field appears after 1s; the link is there from the start. The field must win.
+  const lp5 = await b5.newPage();
+  await lp5.goto(`http://localhost:${SITE_PORT}/late`);
+  await lp5.evaluate(() => (window as any).navigator_widget.ask("late field"));
+  await lp5.waitForTimeout(3500); // past both the render and the link grace period
+  const field = (await lp5.locator("#lf").boundingBox())!;
+  const t12 = await tipOf(lp5);
+  assert(Math.abs(t12.x - field.x) < 20 && Math.abs(t12.y - field.y) < 20,
+    `spotlight should be on the late field, not the link: ${JSON.stringify(t12)}`);
+  assert.equal(t12.hint, "Fill it in");
+  ok("a field that renders late beats a link to another page");
+
+  // Genuinely elsewhere: offer the link, say it's a detour, and don't count it as the step.
+  const dp = await b5.newPage();
+  await dp.goto(`http://localhost:${SITE_PORT}/detour`);
+  await dp.evaluate(() => (window as any).navigator_widget.ask("detour please"));
+  await dp.waitForFunction(
+    () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"), null, { timeout: 6000 });
+  assert.match((await tipOf(dp)).hint!, /go here first/i, "a detour link should say it is a detour");
+  await dp.click("a[href='/settings']");
+  await dp.waitForURL("**/settings");
+  await dp.waitForFunction(
+    () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"), null, { timeout: 8000 });
+  const after = await tipOf(dp);
+  assert.equal(after.step, "Step 1 of 1", "following the detour must not count as doing the step");
+  assert.equal(after.hint, "Open Appearance");
+  ok("detour link is labelled as one, and following it resumes the same step");
+  await b5.close();
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
