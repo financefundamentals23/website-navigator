@@ -178,10 +178,19 @@
           box-shadow: 0 10px 40px rgba(0,0,0,.3); display: none;
         }
         .panel.open { display: block; }
+        .row { display: flex; gap: 8px; align-items: center; }
         input {
-          width: 100%; padding: 10px 12px; border: 1px solid #d6d6db;
+          flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid #d6d6db;
           border-radius: 9px; outline: none;
         }
+        .close {
+          flex: none; width: 32px; height: 32px; display: grid; place-items: center;
+          background: none; border: 0; border-radius: 8px; color: inherit;
+          opacity: .6; cursor: pointer;
+        }
+        .close:hover { opacity: 1; background: rgba(127,127,127,.15); }
+        .close:focus-visible { opacity: 1; outline: 2px solid var(--wnav-accent, #6a5cff); }
+        .close svg { width: 16px; height: 16px; display: block; }
         input:focus { border-color: var(--wnav-accent, #6a5cff); }
         .msg { margin-top: 10px; color: #55555f; min-height: 18px; }
         .ring {
@@ -219,7 +228,13 @@
         </button>
       </div>
       <div class="panel" role="dialog" aria-label="${esc(conf.label)}">
-        <input aria-label="What are you looking for?" placeholder="${esc(conf.placeholder)}" />
+        <div class="row">
+          <input aria-label="What are you looking for?" placeholder="${esc(conf.placeholder)}" />
+          <button class="close" type="button" aria-label="Close">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+          </button>
+        </div>
         <div class="msg" role="status" aria-live="polite"></div>
       </div>
       <div class="ring"></div>
@@ -254,6 +269,13 @@
       showLauncher(false);
       input.focus();
     };
+    function close() {
+      panel.classList.remove("open");
+      showLauncher(true);
+      // Hand focus back to whatever opened the panel, so keyboard users aren't
+      // dropped at the top of the page.
+      (custom || launch).focus?.();
+    }
     // With a custom trigger the element belongs to the site, so leave it alone.
     function showLauncher(visible) {
       if (custom) return;
@@ -261,6 +283,7 @@
     }
 
     launch.onclick = open;
+    $(".close").onclick = close;
     custom?.addEventListener("click", (e) => {
       e.preventDefault();
       open();
@@ -458,10 +481,7 @@
         recovered = false;
         ask(input.value.trim());
       }
-      if (e.key === "Escape") {
-        panel.classList.remove("open");
-        showLauncher(true);
-      }
+      if (e.key === "Escape") close();
     });
 
     // A step can point at another page. Pick the walkthrough back up after the load.
@@ -472,6 +492,6 @@
       awaitStep();
     }
 
-    window.navigator_widget = { ask, stop, open, close: () => { panel.classList.remove("open"); showLauncher(true); } };
+    window.navigator_widget = { ask, stop, open, close };
   }
 })();
