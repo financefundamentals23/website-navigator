@@ -15,6 +15,10 @@ services:
       TRUST_PROXY: "1"
     volumes:
       - navdata:/data
+      # Saved login for signed-in crawls (made with login.ts), read-only.
+      # auth.json must exist next to this file: if it is missing, Docker creates
+      # an empty directory in its place and --auth /app/auth.json fails.
+      - ./auth.json:/app/auth.json:ro
     restart: unless-stopped
 
   caddy:
