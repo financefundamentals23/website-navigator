@@ -25,6 +25,16 @@ const shell = (title: string, body: string) => `<!doctype html><html><head>
 <script src="http://localhost:${NAV_PORT}/nav.js" data-site="${SITE}" data-api="http://localhost:${NAV_PORT}"></script>
 </body></html>`;
 
+const widgetTag = (extra: string) =>
+  `<script src="http://localhost:${NAV_PORT}/nav.js" data-site="${SITE}"
+     data-api="http://localhost:${NAV_PORT}" ${extra}></script>`;
+const hostButton = `<button id="hostBtn" onclick="window.hostClicked=true">Host button</button>`;
+// Failure pages point data-api somewhere broken, so they build their own tag.
+const failPage = (attrs: string) =>
+  `<!doctype html><html><body>${hostButton}
+   <script src="http://localhost:${NAV_PORT}/nav.js" data-site="${SITE}" ${attrs}></script>
+   </body></html>`;
+
 const pages: Record<string, string> = {
   "/": shell("Acme", `<h1>Acme</h1><button>Start free trial</button><button>Book a demo</button>`),
   "/pricing": shell("Pricing", `<h1>Pricing</h1><button>Choose Pro</button>`),
@@ -40,6 +50,19 @@ const pages: Record<string, string> = {
      </details>
      <details><summary>Billing</summary><button>Update card</button></details>`,
   ),
+  // Hostile conditions for check 10. Each has a host-page button so we can prove
+  // the page itself still works after the widget has had its problem.
+  "/down": failPage(`data-api="http://localhost:8790"`), // nothing listens there
+  "/hang": failPage(`data-api="http://localhost:8791" data-timeout="500"`),
+  "/nostorage": `<!doctype html><html><head><script>
+    Object.defineProperty(window, "sessionStorage", {
+      get() { throw new DOMException("denied", "SecurityError"); } });
+  </script></head><body><a href="/settings" aria-label="Settings">&#9881;</a>
+  ${hostButton}${widgetTag("")}</body></html>`,
+  "/twice": `<!doctype html><html><body>${hostButton}${widgetTag("")}${widgetTag("")}</body></html>`,
+  // In <head>, before the element data-trigger points at exists.
+  "/head": `<!doctype html><html><head>${widgetTag(`data-trigger="#late"`)}</head>
+    <body><button id="late">Help</button></body></html>`,
   // A host site that places and styles the trigger itself.
   "/custom": `<!doctype html><html><head><style>:root{--wnav-accent:green}</style></head>
 <body><h1>Custom</h1><button id="myHelp">Need a hand?</button>
@@ -383,6 +406,69 @@ try {
   assert.equal(pre.headers.get("access-control-allow-origin"), `http://localhost:${SITE_PORT}`);
   delete process.env.ALLOWED_ORIGINS;
   ok("registered origin served; foreign origin, missing origin and cross-site key refused");
+
+  console.log("\n10. never breaks the host page");
+  // Accepts connections and never answers.
+  const hang = http.createServer(() => {});
+  await new Promise<void>((r) => hang.listen(8791, r));
+
+  const b3 = await chromium.launch();
+  const hostOk = async (path: string, act: (p: import("playwright").Page) => Promise<void>) => {
+    const p = await b3.newPage();
+    const errors: string[] = [];
+    p.on("pageerror", (e) => errors.push(e.message)); // uncaught, i.e. into their page
+    await p.goto(`http://localhost:${SITE_PORT}${path}`);
+    await act(p);
+    if (await p.locator("#hostBtn").count()) {
+      await p.click("#hostBtn");
+      assert.equal(await p.evaluate(() => (window as any).hostClicked), true, `${path}: host page broken`);
+    }
+    assert.deepEqual(errors, [], `${path}: widget threw into the host page`);
+    return p;
+  };
+  const msgOf = (p: import("playwright").Page) =>
+    p.evaluate(() => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".msg")!.textContent);
+  const askIn = (p: import("playwright").Page, q = "where is dark mode?") =>
+    p.evaluate((q) => (window as any).navigator_widget.ask(q), q);
+
+  let p = await hostOk("/down", (p) => askIn(p));
+  assert.match((await msgOf(p))!, /try again/i, "API down should show a polite message");
+  ok("API unreachable: polite message, no errors, host page still works");
+
+  const t0 = Date.now();
+  p = await hostOk("/hang", (p) => askIn(p));
+  const took = Date.now() - t0;
+  assert.match((await msgOf(p))!, /try again/i);
+  assert(took < 5000, `a hanging API should time out at data-timeout (500ms), took ${took}ms`);
+  ok(`API hangs: gave up after the timeout (${took}ms total), no errors`);
+
+  p = await hostOk("/nostorage", async (p) => {
+    await askIn(p);
+    await p.waitForFunction(
+      () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"),
+      null,
+      { timeout: 10000 },
+    );
+  });
+  ok("sessionStorage blocked: walkthrough still starts, no errors");
+
+  p = await hostOk("/twice", async () => {});
+  assert.equal(await p.locator("#wnav-host").count(), 1, "included twice should still mean one widget");
+  ok("script included twice: one widget");
+
+  p = await hostOk("/head", async (p) => {
+    await p.click("#late");
+  });
+  assert(
+    await p.evaluate(
+      () => !!document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".panel.open"),
+    ),
+    "a script in <head> should still bind data-trigger to an element later in the body",
+  );
+  ok("script in <head>: waits for the body, binds data-trigger");
+
+  await b3.close();
+  hang.close();
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {

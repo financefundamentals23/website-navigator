@@ -75,7 +75,7 @@ node server.ts
 ```
 
 ```html
-<script src="https://your-server/nav.js" data-site="acme"></script>
+<script async src="https://your-server/nav.js" data-site="acme"></script>
 ```
 
 
@@ -87,7 +87,7 @@ part of that is yours to change.
 ### Put it where you want
 
 ```html
-<script src="https://your-server/nav.js" data-site="acme"
+<script async src="https://your-server/nav.js" data-site="acme"
         data-position="bottom-left" data-offset="32px"></script>
 ```
 
@@ -101,7 +101,7 @@ all — put the control in your nav bar, your footer, a menu, wherever it belong
 
 ```html
 <button id="help">Need a hand?</button>
-<script src="https://your-server/nav.js" data-site="acme"
+<script async src="https://your-server/nav.js" data-site="acme"
         data-trigger="#help"></script>
 ```
 
@@ -129,6 +129,19 @@ learn — set them on `:root` and they apply:
 `data-label` sets the button's accessible name and tooltip, `data-placeholder`
 the text in the question box. The button is icon-only, so `data-label` is what
 screen readers announce — keep it meaningful.
+
+## If the server is down
+
+The widget is built to be invisible when things go wrong: it never throws into
+your page, and a request that hasn't answered in 8 seconds is abandoned with a
+polite "try again" in its own panel. Load it with `async` (as in the snippets
+above) so a slow or unreachable server can't delay your page either. Override
+the wait with `data-timeout` in milliseconds.
+
+It also tolerates being included twice, being placed in `<head>`, and browsers
+that block `sessionStorage` — there, a walkthrough just can't carry across a
+page load. If your site sends a strict CSP, add the navigator server to
+`connect-src`.
 
 ## Allowed origins
 

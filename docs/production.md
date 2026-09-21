@@ -33,7 +33,7 @@ which the widget only discovers one visitor at a time, six seconds each.
 - Track the recovery-call rate per site. A rising rate *is* the staleness alarm.
 - Version the index; keep the previous one and roll back if recovery spikes.
 
-### It fails loudly inside someone else's page
+### ~~It fails loudly inside someone else's page~~ — done
 
 If the API is down the widget logs and shows an error. It must never throw into
 the host page or block rendering.
