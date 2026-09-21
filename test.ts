@@ -71,6 +71,17 @@ const pages: Record<string, string> = {
     ${widgetTag("")}</body></html>`,
   // Check 12: the step genuinely lives on another page; only a link leads there.
   "/detour": `<!doctype html><html><body><a href="/settings">Settings page</a>${widgetTag("")}</body></html>`,
+  // Check 13: a side rail collapsed by sliding it off-screen (the shape of the
+  // real site's calculator menu), with a toggle that declares what it controls.
+  "/rail": `<!doctype html><html><body style="margin:0">
+    <button id="rt" aria-controls="rail" aria-expanded="false" aria-label="Open calculator menu"
+      style="position:fixed;left:12px;top:12px" onclick="
+        const open = this.getAttribute('aria-expanded') === 'true';
+        this.setAttribute('aria-expanded', String(!open));
+        rail.style.transform = open ? 'translateX(-100%)' : 'none';">&rsaquo;</button>
+    <nav id="rail" style="position:fixed;left:0;top:60px;width:200px;transform:translateX(-100%)">
+      <a href="/calc-a">Affordability Index</a></nav>
+    ${widgetTag("")}</body></html>`,
   // A host site that places and styles the trigger itself.
   "/custom": `<!doctype html><html><head><style>:root{--wnav-accent:green}</style></head>
 <body><h1>Custom</h1><button id="myHelp">Need a hand?</button>
@@ -640,6 +651,32 @@ try {
   assert.equal(after.hint, "Open Appearance");
   ok("detour link is labelled as one, and following it resumes the same step");
   await b5.close();
+
+  console.log("\n13. hidden behind a collapsed menu");
+  seed("rail calc", [{ label: "Affordability Index", role: "a", page: "/rail", hint: "Open the Affordability Index" }]);
+  const b6 = await chromium.launch();
+  const rp = await b6.newPage();
+  await rp.goto(`http://localhost:${SITE_PORT}/rail`);
+  await rp.evaluate(() => (window as any).navigator_widget.ask("rail calc"));
+  await rp.waitForFunction(
+    () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"), null, { timeout: 5000 });
+  const railToggle = (await rp.locator("#rt").boundingBox())!;
+  let t13 = await tipOf(rp);
+  // Before the fix the ring sat at x < 0: on the off-screen link itself.
+  assert(t13.x >= 0, `spotlight is off-screen: ${JSON.stringify(t13)}`);
+  assert(Math.abs(t13.x - railToggle.x) < 20 && Math.abs(t13.y - railToggle.y) < 20,
+    `should point at the menu toggle first: ${JSON.stringify(t13)}`);
+  assert.match(t13.hint!, /open this first/i);
+  await rp.click("#rt");
+  await rp.waitForFunction(
+    () => /Open the Affordability/.test(document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".tip span")!.textContent!),
+    null, { timeout: 5000 });
+  const link = (await rp.locator("#rail a").boundingBox())!;
+  t13 = await tipOf(rp);
+  assert(Math.abs(t13.x - link.x) < 20 && Math.abs(t13.y - link.y) < 20, `should now be on the link: ${JSON.stringify(t13)}`);
+  assert.equal(t13.step, "Step 1 of 1", "opening the menu must not count as the step");
+  ok("off-screen rail: points at its toggle first, then at the link inside");
+  await b6.close();
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
