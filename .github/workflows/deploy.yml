@@ -1,0 +1,68 @@
+# On every push to main: run the tests, then ship the code to the VM and rebuild.
+# One-time VM and secret setup: docs/deploy-gcp.md, "Automatic deploys".
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # redeploy by hand from the Actions tab
+
+# Never two deploys at once on a single small VM; a newer one waits its turn.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # No model key here on purpose: the suite stubs the model when it can't
+      # reach one, so CI checks everything else without spending quota.
+      - run: npm test
+      - run: npm run coverage
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # first build on an e2-micro is slow; later ones reuse layers
+    env:
+      HOST: nav.financefundamentals.app
+    steps:
+      - uses: actions/checkout@v4
+
+      # Committed files only -- .env and auth.json never leave the VM.
+      - run: git archive --format=tar.gz -o navigator.tgz HEAD
+
+      - name: SSH key
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          # Pinned host key: refuse to deploy to anything pretending to be the VM.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Upload and rebuild
+        run: |
+          scp navigator.tgz "deploy@$HOST:/tmp/navigator.tgz"
+          ssh "deploy@$HOST" 'set -e
+            cd /opt/navigator
+            # Replace the code but keep the VM-only files. Clearing first, rather
+            # than extracting over the top, means files deleted in git are gone
+            # here too instead of lingering in the image build.
+            find . -mindepth 1 -maxdepth 1 ! -name .env ! -name auth.json -exec rm -rf {} +
+            tar -xzf /tmp/navigator.tgz && rm /tmp/navigator.tgz
+            docker compose up -d --build
+            docker image prune -f >/dev/null'
+
+      - name: Check it is serving
+        run: curl -fsS --retry 10 --retry-delay 6 --retry-all-errors -o /dev/null "https://$HOST/"
