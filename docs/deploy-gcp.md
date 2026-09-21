@@ -104,9 +104,30 @@ docker compose exec -u node app node crawl.ts finance-calculator-tools https://f
 Keep `-u node`: `exec` otherwise runs as root, and a crawl as root can leave
 the database owned by root, where the server can no longer write to it.
 
-Signed in too: copy `auth.json` up with `gcloud compute scp`, then add
-`--auth /app/auth.json` after mounting it (`-v ./auth.json:/app/auth.json:ro`
-under `app:` in `compose.yml`).
+### Signed-in pages too
+
+`compose.yml` mounts `auth.json` read-only, so the file must be on the VM
+before `docker compose up` (missing, Docker creates an empty directory there).
+
+On your laptop, sign in with a test account (email/password; Google sign-in
+often blocks automated browsers), then press Enter in the terminal:
+
+```bash
+node login.ts https://financefundamentals.app
+gcloud compute scp auth.json navigator:~/navigator/ --zone=us-central1-a
+rm auth.json    # a live login; don't keep extra copies
+```
+
+On the VM, hand it to the container's user (uid 1000) and crawl with it:
+
+```bash
+sudo chown 1000:1000 auth.json && sudo chmod 600 auth.json
+docker compose up -d
+docker compose exec -u node app node crawl.ts finance-calculator-tools https://financefundamentals.app/ --auth /app/auth.json
+```
+
+The crawl ends with "(N only when signed in)". If it warns the session has
+expired, repeat these steps.
 
 ## 6. Add the widget to your site
 
