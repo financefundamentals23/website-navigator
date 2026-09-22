@@ -13,7 +13,7 @@ const ADMIN_KEY = process.env.NAV_ADMIN_KEY ?? "";
 const llm = () => ({
   base: (process.env.LLM_BASE_URL ??
     "https://generativelanguage.googleapis.com/v1beta/openai").replace(/\/$/, ""),
-  model: process.env.LLM_MODEL ?? "gemini-3.5-flash-lite",
+  model: process.env.LLM_MODEL ?? "gemini-3.6-flash",
   key: process.env.LLM_API_KEY ?? process.env.GEMINI_API_KEY ?? "no-key-needed",
 });
 
