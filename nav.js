@@ -163,11 +163,13 @@
       offset: script?.dataset.offset || "20px",
       trigger: script?.dataset.trigger || "",
       label: script?.dataset.label || "Help - find anything on this page",
-      placeholder: script?.dataset.placeholder || "start typing, or pick from the list",
-      title: script?.dataset.title || "Where is",
+      placeholder: script?.dataset.placeholder || "e.g. where is dark mode?",
+      title: script?.dataset.title || "Find anything",
+      // Says plainly what this is and isn't: a guide to places on the site,
+      // not an assistant that answers questions or acts for the visitor.
       note:
         script?.dataset.note ||
-        "Pick what you are looking for and it will be pointed out on the page. The list is everything found on this site.",
+        "Shows you where things are on this site. It doesn't answer questions or do anything for you, and as AI it can get things wrong.",
     };
     const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
@@ -227,17 +229,9 @@
           padding: 3px 6px; border-radius: 999px; color: #fff; background: var(--g);
         }
         input {
-          width: 100%; padding: 10px 34px 10px 12px; border: 1px solid #d6d6db;
+          width: 100%; padding: 10px 12px; border: 1px solid #d6d6db;
           border-radius: 10px; outline: none;
         }
-        .field { position: relative; display: flex; align-items: center; }
-        /* Shares .close's sizing and hover; only placed, and only while there is
-           something to clear -- an X over an empty box invites a pointless click. */
-        .close.clear {
-          position: absolute; right: 5px; width: 24px; height: 24px;
-          margin-left: 0; display: none;
-        }
-        .close.clear.on { display: grid; }
         .note {
           display: flex; gap: 7px; align-items: flex-start;
           margin: 10px -4px 0; padding: 8px 10px; border-radius: 10px;
@@ -254,19 +248,6 @@
         .close:focus-visible { opacity: 1; outline: 2px solid var(--wnav-accent, #6a5cff); }
         .close svg { width: 14px; height: 14px; display: block; }
         input:focus { border-color: var(--wnav-accent, #6a5cff); }
-        .opts {
-          list-style: none; margin: 8px 0 0; padding: 0; max-height: 210px;
-          overflow-y: auto; border-radius: 10px;
-        }
-        .opts:empty { display: none; }
-        .opts li {
-          padding: 7px 10px; border-radius: 8px; cursor: pointer;
-          display: flex; gap: 8px; align-items: baseline;
-        }
-        .opts li:hover, .opts li[aria-selected="true"] {
-          background: color-mix(in srgb, var(--wnav-accent, #6a5cff) 14%, transparent);
-        }
-        .opts .where { margin-left: auto; font-size: 11px; opacity: .6; }
         .msg { margin-top: 10px; color: #55555f; }
         .msg:empty { display: none; }
         .ring {
@@ -290,7 +271,6 @@
           .panel { --bg: var(--wnav-bg, #26262c); color: var(--wnav-fg, #f2f2f5); }
           .note { color: #b4b4c2; }
           input { background: #1b1b1f; color: #f2f2f5; border-color: #3a3a44; }
-          .opts .where { opacity: .55; }
           .msg { color: #a9a9b6; }
         }
         @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
@@ -318,20 +298,13 @@
             <path class="twinkle" fill="url(#wnavg)" d="M18.5 2.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/>
           </svg>
           <span class="title">${esc(conf.title)}</span>
+          <span class="badge">AI</span>
           <button class="close" type="button" aria-label="Close">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"
                  stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
           </button>
         </div>
-        <div class="field">
-          <input aria-label="What are you looking for?" role="combobox" aria-expanded="false"
-                 aria-autocomplete="list" autocomplete="off" placeholder="${esc(conf.placeholder)}" />
-          <button class="close clear" type="button" aria-label="Clear">
-            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"
-                 stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
-          </button>
-        </div>
-        <ul class="opts" role="listbox" aria-label="Things on this site"></ul>
+        <input aria-label="What are you looking for?" placeholder="${esc(conf.placeholder)}" />
         <div class="msg" role="status" aria-live="polite"></div>
         <p class="note">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -350,7 +323,6 @@
       panel = $(".panel"),
       input = $("input"),
       msg = $(".msg"),
-      opts = $(".opts"),
       ring = $(".ring"),
       tip = $(".tip");
 
@@ -372,14 +344,6 @@
       panel.classList.add("open");
       showLauncher(false);
       input.focus();
-      // Fetched on first open, not on page load: a visitor who never opens the
-      // panel costs the host site nothing.
-      load()
-        .then(() => render(input.value))
-        .catch((err) => {
-          msg.textContent = "Couldn't load the list of things on this site.";
-          console.warn("[navigator]", err);
-        });
     };
     function close() {
       panel.classList.remove("open");
@@ -395,17 +359,7 @@
     }
 
     launch.onclick = open;
-    $(".close:not(.clear)").onclick = close;
-
-    const clear = $(".clear");
-    const showClear = () => clear.classList.toggle("on", input.value !== "");
-    input.addEventListener("input", showClear);
-    clear.onclick = () => {
-      input.value = "";
-      showClear();
-      render("");
-      input.focus();
-    };
+    $(".close").onclick = close;
     custom?.addEventListener("click", (e) => {
       e.preventDefault();
       open();
@@ -416,11 +370,14 @@
 
     let steps = [],
       at = 0,
+      query = "",
       target = null,
       detour = null, // "link" or "reveal" when the target is on the way to the step, not the step
-      poll = null;
+      poll = null,
+      recovered = false;
 
-    const save = () => store.set({ steps, at });
+    const save = () =>
+      store.set({ steps, at, query, recovered });
 
     function stop() {
       steps = [];
@@ -433,19 +390,7 @@
     }
 
     function place() {
-      if (!target) return;
-      /* The element went away: a menu that unmounts its items when it closes, a
-       * panel that re-rendered. Holding the ring at its last coordinates leaves
-       * it over whatever now sits there -- on the real site, a calculator card --
-       * still captioned with the step's hint. Drop it and look again: usually the
-       * menu's own button is found next, and the visitor is told to open it. */
-      if (!document.contains(target) || !S.isVisible(target)) {
-        target = null;
-        ring.classList.remove("on");
-        tip.classList.remove("on");
-        if (steps.length && at < steps.length) awaitStep();
-        return;
-      }
+      if (!target || !document.contains(target)) return;
       const r = target.getBoundingClientRect();
       const pad = 6;
       ring.style.top = r.top - pad + "px";
@@ -517,19 +462,6 @@
           if (target !== opener) show(step, opener, "reveal");
           return false;
         }
-        /* The page didn't say what reveals it -- a menu button with
-         * aria-expanded but no aria-controls, which is most of them -- but the
-         * answer did: the step before this one is the control that opens it.
-         * Without this the widget waits for an item that only exists while the
-         * menu is open, and gives up with "couldn't find it on this page". */
-        const before = at > 0 ? steps[at - 1] : null;
-        if (before && !["a", "link"].includes(String(before.role).toLowerCase())) {
-          const opensIt = find(before);
-          if (opensIt) {
-            if (target !== opensIt) show(step, opensIt, "reveal");
-            return false;
-          }
-        }
         if (detour !== "link" && Date.now() - t0 > LINK_AFTER_MS) {
           const link = linkTo(step);
           if (link) show(step, link, "link");
@@ -549,15 +481,20 @@
       }, 200);
     }
 
-    /* The index was built from a crawl; the live site may have moved on. There is
-     * no second opinion to ask for any more -- say so and put the list back. */
-    function recover(step) {
-      stop();
-      ring.classList.remove("on");
-      tip.classList.remove("on");
-      panel.classList.add("open");
-      showLauncher(false);
-      msg.textContent = `Couldn't find "${step.label}" on this page.`;
+    /* The index was built from a crawl; the live site may have moved on. One retry
+     * with what's actually on screen, then we admit defeat rather than loop. */
+    async function recover(step) {
+      if (recovered) {
+        ring.classList.remove("on");
+        tip.classList.remove("on");
+        panel.classList.add("open");
+        showLauncher(false);
+        msg.textContent = `Couldn't find "${step.label}" on this page.`;
+        return;
+      }
+      recovered = true;
+      msg.textContent = "Rechecking…";
+      await ask(query, true);
     }
 
     document.addEventListener(
@@ -583,134 +520,65 @@
       true,
     );
 
-    /* The index, fetched once per page load. Everything after this is local:
-     * filtering, and turning a pick into the chain of clicks that reveals it. */
-    let index = null;
-    async function load() {
-      if (index) return index;
-      const r = await fetch(`${API}/elements?site=${encodeURIComponent(SITE)}`, {
-        signal: AbortSignal.timeout?.(TIMEOUT),
-      });
-      const data = await r.json();
-      if (data.error) throw new Error(data.error);
-      /* One entry per thing, not per page it appears on. A header link or an
-       * account menu is recorded against all eight pages the crawl visited, and
-       * listing "Dark mode" six times -- differing only by a path the visitor
-       * doesn't think in -- is not a menu, it's a puzzle. Collapse by what it is
-       * (label and what it hides behind) and keep the pages it was seen on. */
-      const byKey = new Map();
-      for (const e of data.elements || []) {
-        if (!e.label) continue;
-        const k = `${e.label.toLowerCase()}|${(e.parent || "").toLowerCase()}`;
-        const prev = byKey.get(k);
-        if (prev) prev.pages.push(e.page);
-        else byKey.set(k, { ...e, pages: [e.page] });
-      }
-      index = [...byKey.values()];
-      return index;
-    }
-
-    /* Menus nest, and the index stores one parent per element: walk up to get
-     * every disclosure standing between the visitor and what they picked. */
-    function stepsFor(row) {
-      // Something seen on every page is on this one: no trip elsewhere, and no
-      // detour offered. Otherwise it is where the crawl found it.
-      const page = pageOf(row);
-      const byLabel = new Map(index.map((e) => [e.label.toLowerCase(), e]));
-      const chain = [];
-      let cur = row;
-      for (let i = 0; i < 6 && cur?.parent; i++) {
-        const up = byLabel.get(cur.parent.toLowerCase());
-        chain.unshift({
-          label: up?.label ?? cur.parent,
-          role: up?.role ?? "button",
-          page,
-          hint: `Open "${cur.parent}"`,
+    async function ask(q, noCache = false) {
+      query = q;
+      msg.textContent = "Looking…";
+      try {
+        const r = await fetch(`${API}/guide`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          // Model calls take 1-2s; 8s means the server is in trouble. (Optional
+          // call: old browsers without AbortSignal.timeout simply don't time out.)
+          signal: AbortSignal.timeout?.(TIMEOUT),
+          body: JSON.stringify({
+            site: SITE,
+            query: q,
+            url: location.pathname,
+            digest: digest(),
+            noCache,
+          }),
         });
-        cur = up;
+        const data = await r.json();
+        if (r.status === 429) {
+          // A limit, not a failure: say so plainly, and say when to try again.
+          panel.classList.add("open");
+          showLauncher(false);
+          const s = data.retryAfter;
+          msg.textContent = `Too many questions just now — try again in ${s} second${s === 1 ? "" : "s"}.`;
+          return;
+        }
+        if (data.error) throw new Error(data.error);
+        msg.textContent = data.answer || "";
+        steps = data.steps || [];
+        at = 0;
+        if (!steps.length) return;
+        panel.classList.remove("open");
+        showLauncher(true);
+        awaitStep();
+      } catch (err) {
+        panel.classList.add("open");
+        showLauncher(false);
+        msg.textContent = "Sorry — couldn't work that out. Try again in a moment.";
+        console.warn("[navigator]", err);
       }
-      return [...chain, { label: row.label, role: row.role, page, hint: `Here it is: "${row.label}"` }];
     }
-
-    const pageOf = (row) =>
-      row.pages?.includes(location.pathname) ? location.pathname : row.page;
-
-    let shown = [];
-    let cursor = -1;
-    function render(q) {
-      const want = q.toLowerCase().trim();
-      // Whole list when the box is empty: the point is to browse as well as type.
-      shown = (index || [])
-        .filter((e) => !want || e.label.toLowerCase().includes(want))
-        .sort((a, b) => {
-          // What starts with what you typed first, then the rest, A-Z.
-          const ra = a.label.toLowerCase().startsWith(want) ? 0 : 1;
-          const rb = b.label.toLowerCase().startsWith(want) ? 0 : 1;
-          return ra - rb || a.label.localeCompare(b.label);
-        })
-        .slice(0, 50);
-      cursor = -1;
-      input.setAttribute("aria-expanded", shown.length ? "true" : "false");
-      opts.innerHTML = shown
-        .map(
-          (e, i) =>
-            `<li role="option" id="wnav-o${i}" aria-selected="false">` +
-            `<span>${esc(e.label)}</span>` +
-            // On one page: say which. Everywhere: saying so is just noise.
-            (e.pages?.length === 1 && e.page !== location.pathname
-              ? `<span class="where">${esc(e.page)}</span>`
-              : "") +
-            `</li>`,
-        )
-        .join("");
-      msg.textContent = index && !shown.length ? `Nothing here matches "${q}".` : "";
-    }
-
-    function highlight(i) {
-      const items = [...opts.children];
-      items.forEach((li, n) => li.setAttribute("aria-selected", String(n === i)));
-      cursor = i;
-      items[i]?.scrollIntoView({ block: "nearest" });
-    }
-
-    function pick(row) {
-      if (!row) return;
-      steps = stepsFor(row);
-      at = 0;
-      msg.textContent = "";
-      panel.classList.remove("open");
-      showLauncher(true);
-      awaitStep();
-    }
-
-    opts.addEventListener("click", (e) => {
-      const li = e.target.closest("li");
-      if (li) pick(shown[[...opts.children].indexOf(li)]);
-    });
-
-    input.addEventListener("input", () => render(input.value));
 
     input.addEventListener("keydown", (e) => {
-      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-        e.preventDefault();
-        if (!shown.length) return;
-        highlight((cursor + (e.key === "ArrowDown" ? 1 : shown.length - 1) + shown.length) % shown.length);
-        return;
+      if (e.key === "Enter" && input.value.trim()) {
+        recovered = false;
+        ask(input.value.trim());
       }
-      // Enter with nothing highlighted takes the top match, which is what a
-      // visitor who typed the whole label and hit Enter means.
-      if (e.key === "Enter") return pick(shown[cursor >= 0 ? cursor : 0]);
       if (e.key === "Escape") close();
     });
 
     // A step can point at another page. Pick the walkthrough back up after the load.
     const saved = store.get();
     if (saved?.steps?.length && saved.at < saved.steps.length) {
-      ({ steps, at } = saved);
+      ({ steps, at, query, recovered } = saved);
       showLauncher(false);
       awaitStep();
     }
 
-    window.navigator_widget = { pick: (label) => pick((index || []).find((e) => e.label.toLowerCase() === String(label).toLowerCase())), load, stop, open, close };
+    window.navigator_widget = { ask, stop, open, close };
   }
 })();
