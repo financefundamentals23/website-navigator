@@ -413,7 +413,19 @@
     }
 
     function place() {
-      if (!target || !document.contains(target)) return;
+      if (!target) return;
+      /* The element went away: a menu that unmounts its items when it closes, a
+       * panel that re-rendered. Holding the ring at its last coordinates leaves
+       * it over whatever now sits there -- on the real site, a calculator card --
+       * still captioned with the step's hint. Drop it and look again: usually the
+       * menu's own button is found next, and the visitor is told to open it. */
+      if (!document.contains(target) || !S.isVisible(target)) {
+        target = null;
+        ring.classList.remove("on");
+        tip.classList.remove("on");
+        if (steps.length && at < steps.length) awaitStep();
+        return;
+      }
       const r = target.getBoundingClientRect();
       const pad = 6;
       ring.style.top = r.top - pad + "px";
