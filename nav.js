@@ -593,33 +593,47 @@
       });
       const data = await r.json();
       if (data.error) throw new Error(data.error);
-      // Same label twice on one page is the same thing to a visitor.
-      const seen = new Set();
-      index = (data.elements || []).filter((e) => {
-        const k = `${e.page}|${e.label.toLowerCase()}`;
-        return e.label && !seen.has(k) && seen.add(k);
-      });
+      /* One entry per thing, not per page it appears on. A header link or an
+       * account menu is recorded against all eight pages the crawl visited, and
+       * listing "Dark mode" six times -- differing only by a path the visitor
+       * doesn't think in -- is not a menu, it's a puzzle. Collapse by what it is
+       * (label and what it hides behind) and keep the pages it was seen on. */
+      const byKey = new Map();
+      for (const e of data.elements || []) {
+        if (!e.label) continue;
+        const k = `${e.label.toLowerCase()}|${(e.parent || "").toLowerCase()}`;
+        const prev = byKey.get(k);
+        if (prev) prev.pages.push(e.page);
+        else byKey.set(k, { ...e, pages: [e.page] });
+      }
+      index = [...byKey.values()];
       return index;
     }
 
     /* Menus nest, and the index stores one parent per element: walk up to get
      * every disclosure standing between the visitor and what they picked. */
     function stepsFor(row) {
-      const byLabel = new Map(index.map((e) => [`${e.page}|${e.label.toLowerCase()}`, e]));
+      // Something seen on every page is on this one: no trip elsewhere, and no
+      // detour offered. Otherwise it is where the crawl found it.
+      const page = pageOf(row);
+      const byLabel = new Map(index.map((e) => [e.label.toLowerCase(), e]));
       const chain = [];
       let cur = row;
       for (let i = 0; i < 6 && cur?.parent; i++) {
-        const up = byLabel.get(`${cur.page}|${cur.parent.toLowerCase()}`);
+        const up = byLabel.get(cur.parent.toLowerCase());
         chain.unshift({
           label: up?.label ?? cur.parent,
           role: up?.role ?? "button",
-          page: cur.page,
+          page,
           hint: `Open "${cur.parent}"`,
         });
         cur = up;
       }
-      return [...chain, { ...row, hint: `Here it is: "${row.label}"` }];
+      return [...chain, { label: row.label, role: row.role, page, hint: `Here it is: "${row.label}"` }];
     }
+
+    const pageOf = (row) =>
+      row.pages?.includes(location.pathname) ? location.pathname : row.page;
 
     let shown = [];
     let cursor = -1;
@@ -641,7 +655,12 @@
         .map(
           (e, i) =>
             `<li role="option" id="wnav-o${i}" aria-selected="false">` +
-            `<span>${esc(e.label)}</span><span class="where">${esc(e.page)}</span></li>`,
+            `<span>${esc(e.label)}</span>` +
+            // On one page: say which. Everywhere: saying so is just noise.
+            (e.pages?.length === 1 && e.page !== location.pathname
+              ? `<span class="where">${esc(e.page)}</span>`
+              : "") +
+            `</li>`,
         )
         .join("");
       msg.textContent = index && !shown.length ? `Nothing here matches "${q}".` : "";

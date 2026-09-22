@@ -660,6 +660,39 @@ try {
   if (ipLimit18 === undefined) delete process.env.RATE_IP_PER_MIN;
   else process.env.RATE_IP_PER_MIN = ipLimit18;
 
+  console.log("\n13. one entry per thing, not per page");
+  // A header link the crawl saw on every page it visited.
+  putElements(SITE, [
+    { page: "/", label: "Repeated link", role: "a", parent: "" },
+    { page: "/settings", label: "Repeated link", role: "a", parent: "" },
+    { page: "/detour", label: "Repeated link", role: "a", parent: "" },
+  ]);
+  // Check 5 spent this address's allowance; a browser can't spoof one.
+  const ipLimit13 = process.env.RATE_IP_PER_MIN;
+  process.env.RATE_IP_PER_MIN = "1000";
+  const b9 = await chromium.launch();
+  const cp = await b9.newPage();
+  await cp.goto(`http://localhost:${SITE_PORT}/detour`);
+  const listed = await cp.evaluate(async () => {
+    const w = (window as any).navigator_widget;
+    const rows = await w.load();
+    return rows.filter((e: any) => e.label === "Repeated link").length;
+  });
+  assert.equal(listed, 1, `the same link on three pages should be listed once, got ${listed}`);
+
+  // And picking it means here, so nothing offers a trip to another page.
+  await cp.evaluate(() => (window as any).navigator_widget.pick("Repeated link"));
+  await cp.waitForTimeout(3200); // past the link grace period
+  const t13c = await cp.evaluate(() => {
+    const sr = document.querySelector("#wnav-host")!.shadowRoot!;
+    return sr.querySelector(".tip span")!.textContent;
+  });
+  assert.doesNotMatch(t13c!, /go here first/i, `chrome on every page must not send the visitor away: ${t13c}`);
+  ok("a link on every page is listed once and resolved to the page the visitor is on");
+  await b9.close();
+  if (ipLimit13 === undefined) delete process.env.RATE_IP_PER_MIN;
+  else process.env.RATE_IP_PER_MIN = ipLimit13;
+
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
   siteServer.close();
