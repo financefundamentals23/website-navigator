@@ -229,9 +229,17 @@
           padding: 3px 6px; border-radius: 999px; color: #fff; background: var(--g);
         }
         input {
-          width: 100%; padding: 10px 12px; border: 1px solid #d6d6db;
+          width: 100%; padding: 10px 34px 10px 12px; border: 1px solid #d6d6db;
           border-radius: 10px; outline: none;
         }
+        .field { position: relative; display: flex; align-items: center; }
+        /* Shares .close's sizing and hover; only placed, and only while there is
+           something to clear -- an X over an empty box invites a pointless click. */
+        .close.clear {
+          position: absolute; right: 5px; width: 24px; height: 24px;
+          margin-left: 0; display: none;
+        }
+        .close.clear.on { display: grid; }
         .note {
           display: flex; gap: 7px; align-items: flex-start;
           margin: 10px -4px 0; padding: 8px 10px; border-radius: 10px;
@@ -304,7 +312,13 @@
                  stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
           </button>
         </div>
-        <input aria-label="What are you looking for?" placeholder="${esc(conf.placeholder)}" />
+        <div class="field">
+          <input aria-label="What are you looking for?" placeholder="${esc(conf.placeholder)}" />
+          <button class="close clear" type="button" aria-label="Clear">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+          </button>
+        </div>
         <div class="msg" role="status" aria-live="polite"></div>
         <p class="note">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -359,7 +373,16 @@
     }
 
     launch.onclick = open;
-    $(".close").onclick = close;
+    $(".close:not(.clear)").onclick = close;
+
+    const clear = $(".clear");
+    const showClear = () => clear.classList.toggle("on", input.value !== "");
+    input.addEventListener("input", showClear);
+    clear.onclick = () => {
+      input.value = "";
+      showClear();
+      input.focus();
+    };
     custom?.addEventListener("click", (e) => {
       e.preventDefault();
       open();
