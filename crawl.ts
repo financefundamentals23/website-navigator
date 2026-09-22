@@ -140,6 +140,9 @@ async function crawlPage(page: Page, url: string, origin: string) {
             // A tab reveals a hidden panel exactly like a disclosure does, and
             // switching tabs is never destructive.
             el.getAttribute("role") === "tab" ||
+            // Radix/shadcn-style components track open state here instead of
+            // (or as well as) aria-expanded.
+            el.getAttribute("data-state") === "closed" ||
             re.test(name);
           if (!opens) continue;
           el.setAttribute("data-wnav-open", name.replace(/["\\]/g, ""));
@@ -151,41 +154,67 @@ async function crawlPage(page: Page, url: string, origin: string) {
       DISCLOSURE_WORDS.source,
     );
 
-  const openers = await tag();
   const seen = new Set(base.map((e) => e.label));
+  const opened = new Set<string>(); // clicked once already -- never reopen, page-wide
+  const MAX_DEPTH = 3; // menu > submenu > sub-submenu
+  const MAX_TOTAL = 40; // bound on a page with a lot of nesting
 
-  for (const { name } of openers) {
-    try {
-      // Re-tag every time: opening a menu, or a click that reloads the same path,
-      // wipes the markers we navigate by.
-      await tag();
-      const target = page.locator(`[data-wnav-open="${name}"]`).first();
-      if (!(await target.count())) continue;
-      // Some menus only appear on hover; hovering first costs nothing for the rest.
-      await target.hover({ timeout: 1500 }).catch(() => {});
-      await page.waitForTimeout(150);
-      for (const e of await snapshot(page)) {
-        if (seen.has(e.label)) continue;
-        seen.add(e.label);
-        els.push({ ...e, page: path, parent: name });
+  /* A menu can hide a menu: a settings panel with its own accordion, a nav item
+   * whose submenu has its own flyout. One flat pass over `tag()` only ever
+   * clicked what was visible before anything opened, so nothing behind a second
+   * disclosure was ever recorded -- reliably, on every re-crawl. Recurse: after
+   * opening a disclosure, look again, and only descend into openers that click
+   * actually revealed (not sibling menus that happened to already be on the
+   * page and get re-tagged along with everything else). */
+  async function explore(depth: number) {
+    if (depth >= MAX_DEPTH || opened.size >= MAX_TOTAL) return;
+    const before = await tag();
+    const beforeNames = new Set(before.map((o) => o.name));
+    const candidates = before.filter((o) => !opened.has(o.name));
+
+    for (const { name } of candidates) {
+      if (opened.size >= MAX_TOTAL) break;
+      opened.add(name);
+      try {
+        // Re-tag every time: opening a menu, or a click that reloads the same
+        // path, wipes the markers we navigate by.
+        await tag();
+        const target = page.locator(`[data-wnav-open="${name}"]`).first();
+        if (!(await target.count())) continue;
+        // Some menus only appear on hover; hovering first costs nothing for the rest.
+        await target.hover({ timeout: 1500 }).catch(() => {});
+        await page.waitForTimeout(150);
+        for (const e of await snapshot(page)) {
+          if (seen.has(e.label)) continue;
+          seen.add(e.label);
+          els.push({ ...e, page: path, parent: name });
+        }
+        await target.click({ timeout: 2000, noWaitAfter: true });
+        await page.waitForTimeout(350);
+        if (new URL(page.url()).pathname !== path) {
+          // It navigated; the link crawl covers that page. Come back and re-tag.
+          await page.goto(url, { waitUntil: "domcontentloaded" });
+          await page.waitForTimeout(300);
+          continue;
+        }
+        for (const e of await snapshot(page)) {
+          if (seen.has(e.label)) continue;
+          seen.add(e.label);
+          els.push({ ...e, page: path, parent: name });
+        }
+        // Did opening this reveal a disclosure of its own? Only then is
+        // descending worth the clicks.
+        const after = await tag();
+        if (after.some((o) => !beforeNames.has(o.name) && !opened.has(o.name))) {
+          await explore(depth + 1);
+        }
+      } catch {
+        // A disclosure that will not open is not a crawl failure.
       }
-      await target.click({ timeout: 2000, noWaitAfter: true });
-      await page.waitForTimeout(350);
-      if (new URL(page.url()).pathname !== path) {
-        // It navigated; the link crawl covers that page. Come back and re-tag.
-        await page.goto(url, { waitUntil: "domcontentloaded" });
-        await page.waitForTimeout(300);
-        continue;
-      }
-      for (const e of await snapshot(page)) {
-        if (seen.has(e.label)) continue;
-        seen.add(e.label);
-        els.push({ ...e, page: path, parent: name });
-      }
-    } catch {
-      // A disclosure that will not open is not a crawl failure.
     }
   }
+
+  await explore(0);
 
   const next = links
     .filter((h) => h.startsWith(origin))
