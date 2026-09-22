@@ -238,12 +238,23 @@ const asTsv = (rows: El[]) => {
   );
 };
 
+// A step can tell a signed-out visitor to sign in first; that step is baked into
+// the cached answer. Caching it under the bare question would then hand a
+// signed-in visitor the exact same "sign in first" instruction forever -- the
+// cache never sees their session, only whatever the first asker's screen showed.
+// So split the cache in two: whether the asker's own screen currently shows a
+// sign-in control.
+const SIGNED_OUT_RE = /\bsign[\s-]?(in|up)\b|\blog[\s-]?(in|on)\b/i;
+const looksSignedOut = (digest: any[]) =>
+  digest.some((d) => SIGNED_OUT_RE.test(String(d?.label ?? "")));
+
 async function guide(body: any) {
   const site = String(body.site ?? "");
   const query = String(body.query ?? "").slice(0, 300);
   if (!site || !query) throw new Error("site and query are required");
 
-  const key = norm(query);
+  const live = (body.digest ?? []).slice(0, 200);
+  const key = norm(query) + (looksSignedOut(live) ? "\u0000out" : "");
   if (!body.noCache) {
     const hit = db
       .prepare(`SELECT json FROM answers WHERE site = ? AND q = ?`)
@@ -257,7 +268,6 @@ async function guide(body: any) {
   const rows = relevantIndex(site, query, here);
   if (!rows.length) throw new Error(`no index for site "${site}" -- run the crawler first`);
 
-  const live = (body.digest ?? []).slice(0, 200);
   const digest = live.map((d: any) => `${d.label}\t${d.role}`).join("\n");
 
   // Checked here, after the cache and the index lookup: only a real model call counts.
