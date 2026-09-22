@@ -893,6 +893,36 @@ try {
   if (ipLimit18 === undefined) delete process.env.RATE_IP_PER_MIN;
   else process.env.RATE_IP_PER_MIN = ipLimit18;
 
+  console.log("\n19. the route to sign-in goes too, not just the sign-in step");
+  // Exactly what production cached: the accordion is only there because that copy
+  // of "Sign in" lives inside it.
+  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+    SITE, "buried signin", JSON.stringify({
+      answer: "You will need to sign in to access Dark mode from the Account menu.",
+      confidence: 1,
+      steps: [
+        { label: "YOUR SAVED CALCULATIONS", role: "summary", page: "/", hint: "Open it" },
+        { label: "Sign in", role: "a", page: "/", hint: "Sign in" },
+        { label: "Account menu", role: "button", page: "/", hint: "Open the account menu" },
+        { label: "Dark mode", role: "menuitem", page: "/", hint: "Toggle dark mode" },
+      ],
+    }), Date.now());
+  const ask19 = async (digest: object[]) =>
+    (await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.19" },
+      body: JSON.stringify({ site: SITE, query: "buried signin", url: "/", digest }),
+    })).json()) as any;
+
+  const in19 = await ask19([{ label: "Account menu", role: "button" }]);
+  assert.deepEqual(in19.steps.map((s: any) => s.label), ["Account menu", "Dark mode"],
+    `signed-in visitor should skip the whole sign-in detour: ${JSON.stringify(in19.steps)}`);
+  assert.doesNotMatch(in19.answer, /sign in/i);
+
+  const out19 = await ask19([{ label: "Sign in", role: "a" }]);
+  assert.equal(out19.steps.length, 4, "a signed-out visitor still needs the whole route");
+  ok("signed in: the accordion and the sign-in step both go; signed out: kept");
+
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
   siteServer.close();
