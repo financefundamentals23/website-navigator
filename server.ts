@@ -251,6 +251,31 @@ const asTsv = (rows: El[]) => {
   );
 };
 
+/* An answer written for a signed-out asker starts with "sign in first", and that
+ * step is baked into the cached answer -- served as-is it strands a visitor who
+ * is already signed in at a sign-in link that isn't on their screen. Their own
+ * digest says which they are: a signed-in page has no sign-in control on it. So
+ * keep one cached answer per question and drop the step on the way out. Only
+ * leading steps: "Sign out" mid-walkthrough is somebody's actual destination. */
+const SIGN_IN_RE = /\bsign[\s-]?(in|up)\b|\blog[\s-]?(in|on)\b/i;
+const isSignIn = (x: any) => SIGN_IN_RE.test(String(x?.label ?? ""));
+
+function forVisitor(out: any, live: any[]) {
+  const steps = Array.isArray(out.steps) ? out.steps : [];
+  if (!steps.length || !live.length) return out;
+  if (live.some(isSignIn)) return out; // sign-in control on screen: signed out
+  let i = 0;
+  while (i < steps.length && isSignIn(steps[i])) i++;
+  if (!i) return out;
+  const rest = steps.slice(i);
+  return {
+    ...out,
+    steps: rest,
+    // The prose leads with the same instruction; the next step's hint doesn't.
+    answer: SIGN_IN_RE.test(String(out.answer ?? "")) ? (rest[0]?.hint ?? "") : out.answer,
+  };
+}
+
 async function guide(body: any) {
   const site = String(body.site ?? "");
   const query = String(body.query ?? "").slice(0, 300);
@@ -264,7 +289,7 @@ async function guide(body: any) {
       .get(site, key) as { json: string } | undefined;
     // Cached by question, not by page: the answer is a path through the site, and
     // "where is dark mode" gets asked far more often than the site changes.
-    if (hit) return { ...JSON.parse(hit.json), cached: true };
+    if (hit) return { ...forVisitor(JSON.parse(hit.json), live), cached: true };
   }
 
   const here = String(body.url ?? "/");
@@ -358,7 +383,8 @@ async function guide(body: any) {
     `INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`,
   ).run(site, key, JSON.stringify(out), Date.now());
 
-  return { ...out, cached: false };
+  // Cache the full answer, sign-in step and all; strip it per visitor on the way out.
+  return { ...forVisitor(out, live), cached: false };
 }
 
 function readBody(req: http.IncomingMessage): Promise<any> {

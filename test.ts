@@ -678,6 +678,50 @@ try {
   ok("off-screen rail: points at its toggle first, then at the link inside");
   await b6.close();
 
+  console.log("\n14. sign-in step, signed-in visitor");
+  // One cached answer serves both: the sign-in step is stripped per visitor.
+  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+    SITE, "signin split", JSON.stringify({
+      answer: "You will need to sign in first, then pick dark mode.",
+      confidence: 0.9,
+      steps: [
+        { label: "Sign in", role: "a", page: "/", hint: "Sign in first" },
+        { label: "Dark mode", role: "button", page: "/", hint: "Click dark mode" },
+      ],
+    }), Date.now());
+  const askAs = async (digest: object[]) =>
+    (await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.7" },
+      body: JSON.stringify({ site: SITE, query: "signin split", url: "/", digest }),
+    })).json()) as any;
+
+  const out14 = await askAs([{ label: "Sign in", role: "a" }, { label: "Dark mode", role: "button" }]);
+  assert.deepEqual(out14.steps.map((s: any) => s.label), ["Sign in", "Dark mode"],
+    "a signed-out visitor still gets the sign-in step");
+  assert.match(out14.answer, /sign in/i);
+
+  const in14 = await askAs([{ label: "Account menu", role: "button" }, { label: "Dark mode", role: "button" }]);
+  assert.deepEqual(in14.steps.map((s: any) => s.label), ["Dark mode"],
+    "a signed-in visitor should not be sent to a sign-in link that isn't there");
+  assert.doesNotMatch(in14.answer, /sign in/i, `answer still says sign in: "${in14.answer}"`);
+
+  // Mid-walkthrough sign-out is a destination, not a leftover instruction.
+  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+    SITE, "logout please", JSON.stringify({
+      answer: "", confidence: 0.9,
+      steps: [
+        { label: "Account menu", role: "button", page: "/", hint: "Open it" },
+        { label: "Log out", role: "button", page: "/", hint: "Log out" },
+      ],
+    }), Date.now());
+  const lo = await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
+    method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.8" },
+    body: JSON.stringify({ site: SITE, query: "logout please", url: "/", digest: [{ label: "Account menu", role: "button" }] }),
+  })).json() as any;
+  assert.equal(lo.steps.length, 2, "a later sign-out step must survive");
+  ok("sign-in step dropped for signed-in visitors, kept for signed-out ones");
+
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
   siteServer.close();
