@@ -19,7 +19,18 @@ const llm = () => ({
 
 async function complete(system: string, user: string, schema: object) {
   const LLM = llm();
-  const r = await fetch(`${LLM.base}/chat/completions`, {
+  // Gemini's free tier regularly answers 503 "high demand" for a second or two.
+  // Retry overloads and 5xx briefly; the widget gives up at 8s, so stay well under.
+  for (const wait of [400, 1200]) {
+    const r = await call(LLM, system, user, schema);
+    if (r.status !== 429 && r.status < 500) return parse(LLM, r);
+    await new Promise((res) => setTimeout(res, wait));
+  }
+  return parse(LLM, await call(LLM, system, user, schema));
+}
+
+const call = (LLM: ReturnType<typeof llm>, system: string, user: string, schema: object) =>
+  fetch(`${LLM.base}/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${LLM.key}` },
     body: JSON.stringify({
@@ -35,6 +46,8 @@ async function complete(system: string, user: string, schema: object) {
       },
     }),
   });
+
+async function parse(LLM: ReturnType<typeof llm>, r: Response) {
   if (!r.ok) throw new Error(`${LLM.model} returned ${r.status}: ${(await r.text()).slice(0, 300)}`);
   const body = (await r.json()) as any;
   const text = body.choices?.[0]?.message?.content;
