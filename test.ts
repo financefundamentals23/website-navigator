@@ -92,6 +92,16 @@ const pages: Record<string, string> = {
     <div id="menu" role="menu" style="position:fixed;right:12px;top:60px"></div>
     <div style="position:fixed;right:12px;top:60px;width:150px;height:40px">Future Expense Calculator</div>
     ${widgetTag("")}</body></html>`,
+  // Check 18: a menu button that says it is closed but not what it controls --
+  // aria-expanded with no aria-controls, the shape of the real account menu.
+  "/popup": `<!doctype html><html><body style="margin:0">
+    <button id="pt" aria-expanded="false" aria-haspopup="true" style="position:fixed;right:12px;top:12px"
+      onclick="const open = this.getAttribute('aria-expanded') === 'true';
+        this.setAttribute('aria-expanded', String(!open));
+        pop.style.display = open ? 'none' : 'block';">Account menu</button>
+    <div id="pop" role="menu" style="display:none;position:fixed;right:12px;top:60px">
+      <button role="menuitem">Dark mode</button></div>
+    ${widgetTag("")}</body></html>`,
   // A host site that places and styles the trigger itself.
   "/custom": `<!doctype html><html><head><style>:root{--wnav-accent:green}</style></head>
 <body><h1>Custom</h1><button id="myHelp">Need a hand?</button>
@@ -845,6 +855,43 @@ try {
   })).json() as any;
   assert.equal(l17.steps[1].page, "/settings", `a step after a link must stay on its own page: ${JSON.stringify(l17.steps)}`);
   ok("steps behind on-screen chrome follow the visitor; steps behind a link don't");
+
+  console.log("\n18. the opener is the step before it");
+  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+    SITE, "popup dark", JSON.stringify({ answer: "", confidence: 0.9, steps: [
+      { label: "Account menu", role: "button", page: "/popup", hint: "Open the account menu" },
+      { label: "Dark mode", role: "menuitem", page: "/popup", hint: "Select dark mode" },
+    ] }), Date.now());
+
+  const ipLimit18 = process.env.RATE_IP_PER_MIN;
+  process.env.RATE_IP_PER_MIN = "1000";
+  const b8 = await chromium.launch();
+  const pp = await b8.newPage();
+  await pp.goto(`http://localhost:${SITE_PORT}/popup`);
+  await pp.evaluate(() => (window as any).navigator_widget.ask("popup dark"));
+  await pp.waitForTimeout(700);
+  await pp.click("#pt");            // step 1: opens the menu
+  await pp.waitForTimeout(500);
+  await pp.click("#pt");            // and the visitor closes it again
+  await pp.waitForTimeout(3500);    // past the link grace period
+
+  const t18 = await tipOf(pp);
+  const pBtn = (await pp.locator("#pt").boundingBox())!;
+  assert(t18.on, `widget gave up instead of pointing at the menu: ${JSON.stringify(t18)}`);
+  assert(Math.abs(t18.x - pBtn.x) < 20 && Math.abs(t18.y - pBtn.y) < 20,
+    `should point back at the menu button: ${JSON.stringify(t18)}`);
+  assert.match(t18.hint!, /open this first/i);
+  assert.equal(t18.step, "Step 2 of 2", "reopening the menu is not a step of its own");
+
+  // And opening it again resumes the real step.
+  await pp.click("#pt");
+  await pp.waitForFunction(
+    () => /select dark mode/i.test(document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".tip span")!.textContent!),
+    null, { timeout: 5000 });
+  ok("no aria-controls: points back at the menu, then at the item once it is open");
+  await b8.close();
+  if (ipLimit18 === undefined) delete process.env.RATE_IP_PER_MIN;
+  else process.env.RATE_IP_PER_MIN = ipLimit18;
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {

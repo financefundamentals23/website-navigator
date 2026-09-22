@@ -497,6 +497,19 @@
           if (target !== opener) show(step, opener, "reveal");
           return false;
         }
+        /* The page didn't say what reveals it -- a menu button with
+         * aria-expanded but no aria-controls, which is most of them -- but the
+         * answer did: the step before this one is the control that opens it.
+         * Without this the widget waits for an item that only exists while the
+         * menu is open, and gives up with "couldn't find it on this page". */
+        const before = at > 0 ? steps[at - 1] : null;
+        if (before && !["a", "link"].includes(String(before.role).toLowerCase())) {
+          const opensIt = find(before);
+          if (opensIt) {
+            if (target !== opensIt) show(step, opensIt, "reveal");
+            return false;
+          }
+        }
         if (detour !== "link" && Date.now() - t0 > LINK_AFTER_MS) {
           const link = linkTo(step);
           if (link) show(step, link, "link");
