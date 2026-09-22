@@ -82,6 +82,16 @@ const pages: Record<string, string> = {
     <nav id="rail" style="position:fixed;left:0;top:60px;width:200px;transform:translateX(-100%)">
       <a href="/calc-a">Affordability Index</a></nav>
     ${widgetTag("")}</body></html>`,
+  // Check 16: a menu that unmounts its items when it closes (React-style), the
+  // shape of the real site's account menu.
+  "/menu": `<!doctype html><html><body style="margin:0">
+    <button id="mt" aria-controls="menu" aria-expanded="false" style="position:fixed;right:12px;top:12px"
+      onclick="const open = this.getAttribute('aria-expanded') === 'true';
+        this.setAttribute('aria-expanded', String(!open));
+        menu.innerHTML = open ? '' : '<button id=\\'dm\\' role=\\'menuitem\\'>Dark mode</button>';">Account menu</button>
+    <div id="menu" role="menu" style="position:fixed;right:12px;top:60px"></div>
+    <div style="position:fixed;right:12px;top:60px;width:150px;height:40px">Future Expense Calculator</div>
+    ${widgetTag("")}</body></html>`,
   // A host site that places and styles the trigger itself.
   "/custom": `<!doctype html><html><head><style>:root{--wnav-accent:green}</style></head>
 <body><h1>Custom</h1><button id="myHelp">Need a hand?</button>
@@ -758,6 +768,44 @@ try {
     assert(!(out15.cached && out15.steps.some((s: any) => /sign in/i.test(s.label))),
       `"sign out" reused the "sign in" answer: ${JSON.stringify(out15.steps)}`);
   ok("reworded question served from cache; unrelated and opposite ones were not");
+
+  console.log("\n16. the step's element disappears");
+  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+    SITE, "menu dark", JSON.stringify({ answer: "", confidence: 0.9, steps: [
+      { label: "Account menu", role: "button", page: "/menu", hint: "Open the account menu" },
+      { label: "Dark mode", role: "menuitem", page: "/menu", hint: "Select dark mode" },
+    ] }), Date.now());
+
+  // Check 8 spent this address's allowance; the browser can't spoof one.
+  const ipLimit = process.env.RATE_IP_PER_MIN;
+  process.env.RATE_IP_PER_MIN = "1000";
+
+  const b7 = await chromium.launch();
+  const mp = await b7.newPage();
+  await mp.goto(`http://localhost:${SITE_PORT}/menu`);
+  await mp.evaluate(() => (window as any).navigator_widget.ask("menu dark"));
+  await mp.waitForTimeout(800);
+  await mp.click("#mt"); // opens the menu; step 2's item is now on the page
+  await mp.waitForTimeout(600);
+  const item = (await mp.locator("#dm").boundingBox())!;
+  let t16 = await tipOf(mp);
+  assert(Math.abs(t16.x - item.x) < 20 && Math.abs(t16.y - item.y) < 20,
+    `should ring the menu item: ${JSON.stringify(t16)}`);
+
+  // Close it again: the item is removed from the DOM entirely.
+  await mp.click("#mt");
+  await mp.waitForTimeout(900);
+  t16 = await tipOf(mp);
+  const menuBtn = (await mp.locator("#mt").boundingBox())!;
+  assert(!(t16.on && Math.abs(t16.x - item.x) < 20 && Math.abs(t16.y - item.y) < 20),
+    `ring stayed on the empty space the menu left: ${JSON.stringify(t16)}`);
+  if (t16.on)
+    assert(Math.abs(t16.x - menuBtn.x) < 20 && Math.abs(t16.y - menuBtn.y) < 20,
+      `if anything is ringed it should be the menu's own button: ${JSON.stringify(t16)}`);
+  ok("ring drops the vanished menu item instead of freezing over what replaced it");
+  await b7.close();
+  if (ipLimit === undefined) delete process.env.RATE_IP_PER_MIN;
+  else process.env.RATE_IP_PER_MIN = ipLimit;
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
