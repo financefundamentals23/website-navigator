@@ -335,12 +335,17 @@ function reroute(steps: any[], live: any[], here: string) {
 function forVisitor(out: any, live: any[], here: string) {
   const all = Array.isArray(out.steps) ? out.steps : [];
   if (!all.length || !live.length) return out;
-  const steps = reroute(all, live, here);
-  if (live.some(isSignIn)) return { ...out, steps }; // sign-in on screen: signed out
-  let i = 0;
-  while (i < steps.length && isSignIn(steps[i])) i++;
-  if (!i) return { ...out, steps };
-  const rest = steps.slice(i);
+  if (live.some(isSignIn)) return { ...out, steps: reroute(all, live, here) }; // signed out
+  /* Signed in, so every step up to and including the last sign-in one is about
+   * getting signed in -- not just a leading run. A real answer arrived as
+   * "Open YOUR SAVED CALCULATIONS" -> "Sign in" -> "Account menu" -> "Dark mode":
+   * the accordion is there only because that copy of "Sign in" lives inside it,
+   * so dropping the sign-in step alone would have left the visitor opening an
+   * accordion for no reason. Route first, strip after. */
+  let last = -1;
+  for (let j = 0; j < all.length; j++) if (isSignIn(all[j])) last = j;
+  if (last < 0) return { ...out, steps: reroute(all, live, here) };
+  const rest = reroute(all.slice(last + 1), live, here);
   return {
     ...out,
     steps: rest,
