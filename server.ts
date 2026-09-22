@@ -305,13 +305,41 @@ const asTsv = (rows: El[]) => {
 const SIGN_IN_RE = /\bsign[\s-]?(in|up)\b|\blog[\s-]?(in|on)\b/i;
 const isSignIn = (x: any) => SIGN_IN_RE.test(String(x?.label ?? ""));
 
-function forVisitor(out: any, live: any[]) {
-  const steps = Array.isArray(out.steps) ? out.steps : [];
-  if (!steps.length || !live.length) return out;
-  if (live.some(isSignIn)) return out; // sign-in control on screen: signed out
+/* Header chrome -- an account menu, a theme switcher -- is on every page, but the
+ * crawler records each element against the one page it happened to open the menu
+ * on, and that page is baked into the cached answer. A visitor anywhere else was
+ * then sent to the footer with 'Go here first -- "Dark mode" is on that page',
+ * when the menu holding it was in the header above them.
+ *
+ * Their digest settles it: if the step before this one is on their screen and is
+ * something that opens (a button, a summary -- not a link to somewhere else),
+ * then what it opens is here too. The widget only uses `page` to decide whether
+ * to offer that detour, so correcting it here is enough. */
+const OPENS = (role: string) => !["a", "link"].includes(String(role).toLowerCase());
+
+function reroute(steps: any[], live: any[], here: string) {
+  const onScreen = new Set(
+    live.map((d) => String(d?.label ?? "").toLowerCase().trim()).filter(Boolean),
+  );
+  let behindMenu = false;
+  return steps.map((s) => {
+    const label = String(s.label ?? "").toLowerCase().trim();
+    const hereNow = onScreen.has(label) || behindMenu;
+    // Only a control that opens something carries "here" on to the next step;
+    // a link is how you leave the page, so what follows it is genuinely elsewhere.
+    behindMenu = hereNow && OPENS(s.role);
+    return hereNow ? { ...s, page: here } : s;
+  });
+}
+
+function forVisitor(out: any, live: any[], here: string) {
+  const all = Array.isArray(out.steps) ? out.steps : [];
+  if (!all.length || !live.length) return out;
+  const steps = reroute(all, live, here);
+  if (live.some(isSignIn)) return { ...out, steps }; // sign-in on screen: signed out
   let i = 0;
   while (i < steps.length && isSignIn(steps[i])) i++;
-  if (!i) return out;
+  if (!i) return { ...out, steps };
   const rest = steps.slice(i);
   return {
     ...out,
@@ -327,6 +355,7 @@ async function guide(body: any) {
   if (!site || !query) throw new Error("site and query are required");
 
   const live = (body.digest ?? []).slice(0, 200);
+  const here = String(body.url ?? "/");
   const key = norm(query);
   if (!body.noCache) {
     const hit = db
@@ -334,14 +363,13 @@ async function guide(body: any) {
       .get(site, key) as { json: string } | undefined;
     // Cached by question, not by page: the answer is a path through the site, and
     // "where is dark mode" gets asked far more often than the site changes.
-    if (hit) return { ...forVisitor(JSON.parse(hit.json), live), cached: true };
+    if (hit) return { ...forVisitor(JSON.parse(hit.json), live, here), cached: true };
     // Same question, different words. Costs a scan of this site's rows; the
     // alternative is the whole site index through the model again.
     const near = nearest(site, query);
-    if (near) return { ...forVisitor(JSON.parse(near.json), live), cached: true };
+    if (near) return { ...forVisitor(JSON.parse(near.json), live, here), cached: true };
   }
 
-  const here = String(body.url ?? "/");
   const rows = relevantIndex(site, query, here);
   if (!rows.length) throw new Error(`no index for site "${site}" -- run the crawler first`);
 
@@ -433,7 +461,7 @@ async function guide(body: any) {
   ).run(site, key, JSON.stringify(out), Date.now());
 
   // Cache the full answer, sign-in step and all; strip it per visitor on the way out.
-  return { ...forVisitor(out, live), cached: false };
+  return { ...forVisitor(out, live, here), cached: false };
 }
 
 function readBody(req: http.IncomingMessage): Promise<any> {

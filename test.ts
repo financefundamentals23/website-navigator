@@ -807,6 +807,45 @@ try {
   if (ipLimit === undefined) delete process.env.RATE_IP_PER_MIN;
   else process.env.RATE_IP_PER_MIN = ipLimit;
 
+  console.log("\n17. header chrome is wherever the visitor is");
+  // Cached against the one page the crawler opened the menu on.
+  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+    SITE, "chrome dark", JSON.stringify({ answer: "", confidence: 0.9, steps: [
+      { label: "Account menu", role: "button", page: "/future-expense", hint: "Open the account menu" },
+      { label: "Dark mode", role: "menuitem", page: "/future-expense", hint: "Select dark mode" },
+    ] }), Date.now());
+  const ask17 = async (url: string, digest: object[]) =>
+    (await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.17" },
+      body: JSON.stringify({ site: SITE, query: "chrome dark", url, digest }),
+    })).json()) as any;
+
+  // The account menu is on this visitor's screen, so what it opens is here too --
+  // no "go to that page first" detour to the footer.
+  const g17 = await ask17("/calculators", [{ label: "Account menu", role: "button" }]);
+  assert.deepEqual(g17.steps.map((s: any) => s.page), ["/calculators", "/calculators"],
+    `steps should be routed to the visitor's page: ${JSON.stringify(g17.steps)}`);
+
+  // Nothing of the sort on screen: leave the claim alone, the detour is real.
+  const away17 = await ask17("/calculators", [{ label: "Calculate", role: "button" }]);
+  assert.deepEqual(away17.steps.map((s: any) => s.page), ["/future-expense", "/future-expense"],
+    `untouched when the menu isn't here: ${JSON.stringify(away17.steps)}`);
+
+  // A link is how you leave a page, so what follows one is genuinely elsewhere.
+  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+    SITE, "via link", JSON.stringify({ answer: "", confidence: 0.9, steps: [
+      { label: "Settings page", role: "a", page: "/calculators", hint: "Go to settings" },
+      { label: "Late field", role: "input", page: "/settings", hint: "Fill it in" },
+    ] }), Date.now());
+  const l17 = await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
+    method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.18" },
+    body: JSON.stringify({ site: SITE, query: "via link", url: "/calculators",
+      digest: [{ label: "Settings page", role: "a" }] }),
+  })).json() as any;
+  assert.equal(l17.steps[1].page, "/settings", `a step after a link must stay on its own page: ${JSON.stringify(l17.steps)}`);
+  ok("steps behind on-screen chrome follow the visitor; steps behind a link don't");
+
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
   siteServer.close();
