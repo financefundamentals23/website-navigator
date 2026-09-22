@@ -243,10 +243,17 @@ const asTsv = (rows: El[]) => {
 // signed-in visitor the exact same "sign in first" instruction forever -- the
 // cache never sees their session, only whatever the first asker's screen showed.
 // So split the cache in two: whether the asker's own screen currently shows a
-// sign-in control.
+// sign-in control. Both buckets get an explicit suffix (neither reuses the old
+// bare `norm(query)` key) so a row cached before this split -- which could have
+// been written by a signed-out asker -- is never served to anyone after it.
 const SIGNED_OUT_RE = /\bsign[\s-]?(in|up)\b|\blog[\s-]?(in|on)\b/i;
 const looksSignedOut = (digest: any[]) =>
   digest.some((d) => SIGNED_OUT_RE.test(String(d?.label ?? "")));
+
+// Exported so callers writing straight into the `answers` table (tests, seeding
+// scripts) key rows the same way `guide` reads them.
+export const cacheKey = (query: string, digest: any[] = []) =>
+  norm(query) + (looksSignedOut(digest) ? "\u0000out" : "\u0000in");
 
 async function guide(body: any) {
   const site = String(body.site ?? "");
@@ -254,7 +261,7 @@ async function guide(body: any) {
   if (!site || !query) throw new Error("site and query are required");
 
   const live = (body.digest ?? []).slice(0, 200);
-  const key = norm(query) + (looksSignedOut(live) ? "\u0000out" : "");
+  const key = cacheKey(query, live);
   if (!body.noCache) {
     const hit = db
       .prepare(`SELECT json FROM answers WHERE site = ? AND q = ?`)
