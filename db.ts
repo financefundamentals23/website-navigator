@@ -38,5 +38,4 @@ export function getElements(site: string): El[] {
 
 export function clearSite(site: string) {
   db.prepare(`DELETE FROM elements WHERE site = ?`).run(site);
-  db.prepare(`DELETE FROM answers WHERE site = ?`).run(site);
 }
