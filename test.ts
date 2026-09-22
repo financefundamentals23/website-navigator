@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { chromium } from "playwright";
 import { crawl } from "./crawl.ts";
-import { db, getElements } from "./db.ts";
+import { db, getElements, putElements } from "./db.ts";
 
 const NAV_PORT = 8799;
 const SITE_PORT = 8798;
@@ -148,38 +148,14 @@ try {
   assert.equal(dark.parent, "Appearance", `expected parent 'Appearance', got '${dark.parent}'`);
   ok(`indexed ${els.length} elements; 'Dark mode' found inside 'Appearance'`);
 
-  console.log("\n2. guide");
-  let guide = await post("/guide", { site: SITE, query: "where is dark mode?", url: "/" });
-  let stubbed = false;
-  const guideErr = guide.error;
-  if (guide.error?.match(/api key|auth|credential|fetch failed|ECONNREFUSED|40[0-3]|429/i)) {
-    // No model reachable here. Seed the cache with the path it would return, so the
-    // widget checks below still run for real -- they are the bulk of the code.
-    stubbed = true;
-    db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-      SITE,
-      "where is dark mode",
-      JSON.stringify({
-        answer: "Dark mode is under Settings -> Appearance.",
-        confidence: 0.9,
-        steps: [
-          { label: "Settings", role: "a", page: "/", hint: "Open Settings" },
-          { label: "Appearance", role: "summary", page: "/settings", hint: "Expand Appearance" },
-          { label: "Dark mode", role: "switch", page: "/settings", hint: "Toggle Dark mode" },
-        ],
-      }),
-      Date.now(),
-    );
-    guide = await post("/guide", { site: SITE, query: "where is dark mode?", url: "/" });
-    console.log(`  \x1b[33mstub\x1b[0m no model reachable (${String(guideErr).slice(0, 80)}) - canned path so 3-4 still run`);
-  }
-  assert(!guide.error, `guide failed: ${guide.error}`);
-  assert(guide.steps.length >= 2, `expected a multi-step path, got ${guide.steps.length}`);
-  assert(
-    /dark/i.test(guide.steps.at(-1).label),
-    `last step should be the toggle, got '${guide.steps.at(-1).label}'`,
-  );
-  ok(`${stubbed ? "(stubbed) " : ""}${guide.steps.length} steps: ${guide.steps.map((s: any) => s.label).join(" -> ")}`);
+  console.log("\n2. the element index");
+  const idx = await (await fetch(`http://localhost:${NAV_PORT}/elements?site=${SITE}`)).json();
+  assert(!idx.error, `index failed: ${idx.error}`);
+  const darkRow = idx.elements.find((e: any) => /dark mode/i.test(e.label));
+  assert(darkRow, "the index should offer 'Dark mode'");
+  assert.equal(darkRow.page, "/settings");
+  assert.equal(darkRow.parent, "Appearance", "and remember what has to be opened first");
+  ok(`${idx.elements.length} elements served; 'Dark mode' is on ${darkRow.page} inside '${darkRow.parent}'`);
 
   console.log("\n3. widget in a browser");
   const browser = await chromium.launch();
@@ -187,7 +163,16 @@ try {
   await page.goto(`http://localhost:${SITE_PORT}/`);
 
   await page.click("#wnav-host .launch");
-  await page.fill("#wnav-host input", "where is dark mode?");
+  await page.fill("#wnav-host input", "dark");
+  // The list is the whole interface now: one entry, and it is the right one.
+  await page.waitForFunction(
+    () => {
+      const li = document.querySelector("#wnav-host")!.shadowRoot!.querySelectorAll(".opts li");
+      return li.length === 1 && /Dark mode/.test(li[0].textContent!);
+    },
+    null,
+    { timeout: 10000 },
+  );
   await page.press("#wnav-host input", "Enter");
   await page.waitForFunction(
     () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"),
@@ -195,6 +180,7 @@ try {
     { timeout: 10000 },
   );
 
+  // "Dark mode" lives on /settings, so the way there is offered as a detour.
   // The ring must actually sit on the gear, not just exist.
   const gear = (await page.locator('a[aria-label="Settings"]').boundingBox())!;
   const ringBox = await page.evaluate(() => {
@@ -203,7 +189,7 @@ try {
   });
   assert(Math.abs(ringBox.x - gear.x) < 20 && Math.abs(ringBox.y - gear.y) < 20,
     `ring at ${JSON.stringify(ringBox)} is not on the gear at ${JSON.stringify(gear)}`);
-  ok("step 1 highlights the settings link");
+  ok("picking it offers the settings link that leads there");
 
   await page.click('a[aria-label="Settings"]');
   await page.waitForURL("**/settings");
@@ -215,7 +201,7 @@ try {
   const stepText = await page.evaluate(
     () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".tip b")!.textContent,
   );
-  assert(/Step [2-9]/.test(stepText!), `expected to advance past step 1, got '${stepText}'`);
+  assert.equal(stepText, "Step 1 of 2", "following a link is not one of the steps");
   ok(`survived the page navigation and resumed at '${stepText}'`);
 
   // The real test of the polling logic: "Dark mode" is not in the DOM's visible
@@ -224,7 +210,7 @@ try {
   await page.waitForFunction(
     () => {
       const sr = document.querySelector("#wnav-host")!.shadowRoot!;
-      return sr.querySelector(".ring.on") && /Step 3/.test(sr.querySelector(".tip b")!.textContent!);
+      return sr.querySelector(".ring.on") && /Step 2/.test(sr.querySelector(".tip b")!.textContent!);
     },
     null,
     { timeout: 10000 },
@@ -236,97 +222,11 @@ try {
   });
   assert(Math.abs(ring3.x - toggle.x) < 20 && Math.abs(ring3.y - toggle.y) < 20,
     `ring at ${JSON.stringify(ring3)} is not on the Dark mode toggle at ${JSON.stringify(toggle)}`);
-  ok("step 3 waited for the accordion to open, then highlighted the Dark mode toggle");
+  ok("step 2 waited for the accordion to open, then highlighted the Dark mode toggle");
 
   await browser.close();
 
-  console.log("\n4. cache");
-  guide = await post("/guide", { site: SITE, query: "Where is DARK MODE??", url: "/" });
-  assert.equal(guide.cached, true, "second identical question should not hit the model");
-  ok("repeat question answered from cache, no model call");
-
-  console.log("\n5. invented labels are rejected");
-  // Stand in for the model with a server that returns one real step and one the
-  // site has never had. A weaker free model does exactly this, and an invented
-  // label sends the widget hunting for something that isn't there.
-  const fake = http.createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "application/json" }).end(
-      JSON.stringify({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                answer: "Teleport straight there.",
-                confidence: 0.95,
-                steps: [
-                  { label: "Settings", role: "a", page: "/", hint: "Open Settings" },
-                  { label: "Teleport to dark mode", role: "button", page: "/", hint: "Click it" },
-                ],
-              }),
-            },
-          },
-        ],
-      }),
-    );
-  });
-  await new Promise<void>((r) => fake.listen(8797, r));
-  process.env.LLM_BASE_URL = "http://localhost:8797";
-
-  // noCache: this exercises the model path, and "beam me to dark mode" is close
-  // enough to the cached "where is dark mode" that the near-match would serve it.
-  const bad = await post("/guide", { site: SITE, query: "beam me to dark mode", url: "/", noCache: true });
-  fake.close();
-  delete process.env.LLM_BASE_URL;
-
-  assert.deepEqual(
-    bad.steps.map((s: any) => s.label),
-    ["Settings"],
-    `invented step survived: ${JSON.stringify(bad.steps)}`,
-  );
-  assert(bad.confidence <= 0.3, `confidence should drop after a rejection, got ${bad.confidence}`);
-  ok("kept the real step, dropped the invented one, lowered confidence");
-
-  console.log("\n6. skipped 'open this first' steps are put back");
-  // The model reliably names the destination and just as reliably forgets the
-  // collapsed panel in front of it, which strands the visitor on a page where the
-  // target isn't visible. The index knows the chain, so the server inserts it.
-  const lazy = http.createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "application/json" }).end(
-      JSON.stringify({
-        choices: [
-          {
-            message: {
-              content: JSON.stringify({
-                answer: "Toggle dark mode.",
-                confidence: 0.9,
-                // Only the destination -- no "Appearance", and a junk page field
-                // of the kind real models emit (" /", "/*", `["\"\"]`).
-                steps: [{ label: "Dark mode", role: "switch", page: " /*", hint: "Toggle it" }],
-              }),
-            },
-          },
-        ],
-      }),
-    );
-  });
-  await new Promise<void>((r) => lazy.listen(8796, r));
-  process.env.LLM_BASE_URL = "http://localhost:8796";
-
-  // noCache for the same reason as 5: this one is about what the model returns.
-  const chained = await post("/guide", { site: SITE, query: "dark mode please", url: "/settings", noCache: true });
-  lazy.close();
-  delete process.env.LLM_BASE_URL;
-
-  assert.deepEqual(
-    chained.steps.map((s: any) => s.label),
-    ["Appearance", "Dark mode"],
-    `expected the accordion step to be inserted, got ${JSON.stringify(chained.steps)}`,
-  );
-  // Page comes from the index, never from the model's junk field.
-  assert.deepEqual(chained.steps.map((s: any) => s.page), ["/settings", "/settings"]);
-  ok("inserted the 'Appearance' step and resolved pages from the index");
-
-  console.log("\n7. the launcher is the host site's to place and style");
+  console.log("\n4. the launcher is the host site's to place and style");
   const b2 = await chromium.launch();
   const p2 = await b2.newPage();
 
@@ -366,7 +266,10 @@ try {
   assert.deepEqual(closed, { panelOpen: false, launcherShown: true, focusOnLauncher: true });
   ok("close button hides the panel, brings the launcher back, returns focus to it");
   const note = await p2.evaluate(() => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".note")!.textContent);
-  assert.match(note!, /doesn.t answer questions/, "panel should say it only helps navigate");
+  assert.match(note!, /pointed out on the page/i, "panel should say what picking something does");
+  const head = await p2.evaluate(() => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".head")!.textContent);
+  assert.match(head!, /where is/i, "the panel leads with the static words");
+  assert.doesNotMatch(head!, /\bAI\b/, "nothing claims to be AI any more");
 
   // Host site takes over: its own trigger, its own corner, its own colour.
   await p2.goto(`http://localhost:${SITE_PORT}/custom`);
@@ -396,59 +299,41 @@ try {
 
   await b2.close();
 
-  console.log("\n8. rate limits");
-  const ask = (ip: string, body: object) =>
-    fetch(`http://localhost:${NAV_PORT}/guide`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": ip },
-      body: JSON.stringify(body),
+  console.log("\n5. rate limits");
+  const ask = (ip: string) =>
+    fetch(`http://localhost:${NAV_PORT}/elements?site=${SITE}`, {
+      headers: { "x-forwarded-for": ip },
     });
 
-  // Per IP: ten questions a minute, cached or not, then 429 with a wait time.
-  const cachedQ = { site: SITE, query: "where is dark mode?", url: "/" };
+  // Per IP: ten index downloads a minute, then 429 with a wait time.
   for (let i = 1; i <= 10; i++) {
-    const r = await ask("203.0.113.9", cachedQ);
+    const r = await ask("203.0.113.9");
     assert.equal(r.status, 200, `request ${i} of 10 should be allowed, got ${r.status}`);
   }
-  const over = await ask("203.0.113.9", cachedQ);
-  assert.equal(over.status, 429, "the 11th question in a minute should be refused");
+  const over = await ask("203.0.113.9");
+  assert.equal(over.status, 429, "the 11th request in a minute should be refused");
   const wait = Number(over.headers.get("retry-after"));
   assert(wait >= 1 && wait <= 60, `Retry-After should be 1-60s, got ${wait}`);
   assert.equal((await over.json()).retryAfter, wait, "retryAfter in the body must match the header");
   // Behind an appending proxy the first X-Forwarded-For entry is the visitor's own
   // text. Forging it must not buy a fresh allowance.
-  assert.equal((await ask("9.9.9.9, 203.0.113.9", cachedQ)).status, 429, "forged first XFF entry dodged the limit");
-  const viaRealIp = await fetch(`http://localhost:${NAV_PORT}/guide`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-real-ip": "203.0.113.9", "x-forwarded-for": "7.7.7.7" },
-    body: JSON.stringify(cachedQ),
+  assert.equal((await ask("9.9.9.9, 203.0.113.9")).status, 429, "forged first XFF entry dodged the limit");
+  const viaRealIp = await fetch(`http://localhost:${NAV_PORT}/elements?site=${SITE}`, {
+    headers: { "x-real-ip": "203.0.113.9", "x-forwarded-for": "7.7.7.7" },
   });
   assert.equal(viaRealIp.status, 429, "X-Real-IP (set by the proxy) should win over X-Forwarded-For");
-  assert.equal((await ask("198.51.100.4", cachedQ)).status, 200, "another visitor must be unaffected");
-  ok(`11th question from one IP refused with Retry-After ${wait}s; other IPs unaffected`);
+  assert.equal((await ask("198.51.100.4")).status, 200, "another visitor must be unaffected");
+  ok(`11th request from one IP refused with Retry-After ${wait}s; other IPs unaffected`);
 
-  // Per site: counts model calls only. With the cap at zero, a cache miss is
-  // refused before the model is called -- and a cache hit is still served.
-  process.env.RATE_SITE_PER_MIN = "0";
-  const miss = await ask("192.0.2.1", { ...cachedQ, query: "a question nobody has asked", noCache: true });
-  const hit = await ask("192.0.2.2", cachedQ);
-  delete process.env.RATE_SITE_PER_MIN;
-  assert.equal(miss.status, 429, "a cache miss past the site cap should be refused");
-  assert.equal(hit.status, 200, "the site cap must not block answers already cached");
-  ok("site cap refuses model calls but still serves cached answers");
-
-  console.log("\n9. origin allowlist");
+  console.log("\n6. origin allowlist");
   process.env.ALLOWED_ORIGINS = `${SITE}=http://localhost:${SITE_PORT}`;
   let ipN = 0; // a fresh address per call, so the per-IP limit stays out of the way
   const from = (origin: string | null, site = SITE) =>
-    fetch(`http://localhost:${NAV_PORT}/guide`, {
-      method: "POST",
+    fetch(`http://localhost:${NAV_PORT}/elements?site=${site}`, {
       headers: {
-        "content-type": "application/json",
         "x-forwarded-for": `10.9.0.${++ipN}`,
         ...(origin ? { origin } : {}),
       },
-      body: JSON.stringify({ site, query: "where is dark mode?", url: "/" }),
     });
 
   const good = await from(`http://localhost:${SITE_PORT}`);
@@ -466,7 +351,7 @@ try {
     "a registered origin must not be able to use another site's key",
   );
 
-  const pre = await fetch(`http://localhost:${NAV_PORT}/guide`, {
+  const pre = await fetch(`http://localhost:${NAV_PORT}/elements`, {
     method: "OPTIONS",
     headers: { origin: `http://localhost:${SITE_PORT}` },
   });
@@ -474,7 +359,7 @@ try {
   delete process.env.ALLOWED_ORIGINS;
   ok("registered origin served; foreign origin, missing origin and cross-site key refused");
 
-  console.log("\n10. never breaks the host page");
+  console.log("\n7. never breaks the host page");
   // Accepts connections and never answers.
   const hang = http.createServer(() => {});
   await new Promise<void>((r) => hang.listen(8791, r));
@@ -495,22 +380,27 @@ try {
   };
   const msgOf = (p: import("playwright").Page) =>
     p.evaluate(() => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".msg")!.textContent);
-  const askIn = (p: import("playwright").Page, q = "where is dark mode?") =>
-    p.evaluate((q) => (window as any).navigator_widget.ask(q), q);
+  const openIn = async (p: import("playwright").Page) => {
+    await p.evaluate(() => (window as any).navigator_widget.open());
+    await p.waitForTimeout(900); // past the widget's own data-timeout
+  };
 
-  let p = await hostOk("/down", (p) => askIn(p));
-  assert.match((await msgOf(p))!, /try again/i, "API down should show a polite message");
+  let p = await hostOk("/down", (p) => openIn(p));
+  assert.match((await msgOf(p))!, /couldn.t load/i, "API down should show a polite message");
   ok("API unreachable: polite message, no errors, host page still works");
 
   const t0 = Date.now();
-  p = await hostOk("/hang", (p) => askIn(p));
+  p = await hostOk("/hang", (p) => openIn(p));
   const took = Date.now() - t0;
-  assert.match((await msgOf(p))!, /try again/i);
+  assert.match((await msgOf(p))!, /couldn.t load/i);
   assert(took < 5000, `a hanging API should time out at data-timeout (500ms), took ${took}ms`);
   ok(`API hangs: gave up after the timeout (${took}ms total), no errors`);
 
   p = await hostOk("/nostorage", async (p) => {
-    await askIn(p);
+    await p.evaluate(async () => {
+      await (window as any).navigator_widget.load();
+      (window as any).navigator_widget.pick("Dark mode");
+    });
     await p.waitForFunction(
       () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"),
       null,
@@ -537,7 +427,7 @@ try {
   await b3.close();
   hang.close();
 
-  console.log("\n11. signed-in crawl");
+  console.log("\n8. signed-in crawl");
   // A small app that keeps its session in IndexedDB, the way Firebase Auth does.
   // /logout comes first in the header: a crawler that followed it would clear
   // the session before ever reaching /account.
@@ -601,38 +491,19 @@ try {
   assert(r11.signedIn > 0);
   ok(`found ${r11.signedIn} signed-in-only element(s), kept signed-out ones, skipped /logout`);
 
-  // With a model available: a signed-out visitor is routed in, not told "no such feature".
-  const g11 = (await (
-    await fetch(`http://localhost:${NAV_PORT}/guide`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": "10.11.0.1" },
-      body: JSON.stringify({
-        site: "authdemo",
-        query: "where do I change my monthly income",
-        url: "/",
-        digest: [{ label: "Sign in", role: "a" }, { label: "Account", role: "a" }],
-      }),
-    })
-  ).json()) as any;
-  if (g11.error) {
-    console.log(`  \x1b[33mskip\x1b[0m model check: ${String(g11.error).slice(0, 60)}`);
-  } else {
-    // The regression: "the site does not have that". Any route in is acceptable --
-    // through sign-in to the field, or to sign-in with the answer saying why.
-    assert(g11.steps.length > 0, `signed-out visitor was told: "${g11.answer}"`);
-    const labels = g11.steps.map((s: any) => s.label).join(" ");
-    assert.match(labels, /sign in|income/i, `route goes nowhere useful: ${labels}`);
-    ok(`signed-out visitor routed in: ${g11.steps.map((s: any) => s.label).join(" -> ")} ("${g11.answer}")`);
-  }
+  // Signed-in-only elements are offered like any other: the list is the index.
+  const authIdx = await (await fetch(`http://localhost:${NAV_PORT}/elements?site=authdemo`)).json();
+  assert(authIdx.elements.some((e: any) => /monthly income/i.test(e.label)),
+    "a field only reachable when signed in should still be listed");
+  ok("the signed-in crawl's finds are offered in the list too");
+
   appServer.close();
 
-  console.log("\n12. late-rendering targets and detours");
-  const seed = (q: string, steps: object[]) =>
-    db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-      SITE, q, JSON.stringify({ answer: "", confidence: 0.9, steps }), Date.now());
-  // Both claim another page, exactly as the server did for "Liquid savings (S)".
-  seed("late field", [{ label: "Late field", role: "input", page: "/settings", hint: "Fill it in" }]);
-  seed("detour please", [{ label: "Appearance", role: "summary", page: "/settings", hint: "Open Appearance" }]);
+  console.log("\n9. late-rendering targets and detours");
+  // Both are indexed against another page, as anything found by the crawl is.
+  putElements(SITE, [
+    { page: "/settings", label: "Late field", role: "input", parent: "" },
+  ]);
 
   const b5 = await chromium.launch();
   const tipOf = (p: import("playwright").Page) =>
@@ -649,19 +520,25 @@ try {
   // The field appears after 1s; the link is there from the start. The field must win.
   const lp5 = await b5.newPage();
   await lp5.goto(`http://localhost:${SITE_PORT}/late`);
-  await lp5.evaluate(() => (window as any).navigator_widget.ask("late field"));
+  await lp5.evaluate(async () => {
+    await (window as any).navigator_widget.load();
+    (window as any).navigator_widget.pick("Late field");
+  });
   await lp5.waitForTimeout(3500); // past both the render and the link grace period
   const field = (await lp5.locator("#lf").boundingBox())!;
   const t12 = await tipOf(lp5);
   assert(Math.abs(t12.x - field.x) < 20 && Math.abs(t12.y - field.y) < 20,
     `spotlight should be on the late field, not the link: ${JSON.stringify(t12)}`);
-  assert.equal(t12.hint, "Fill it in");
+  assert.match(t12.hint!, /Late field/, `expected the field's own hint: ${t12.hint}`);
   ok("a field that renders late beats a link to another page");
 
   // Genuinely elsewhere: offer the link, say it's a detour, and don't count it as the step.
   const dp = await b5.newPage();
   await dp.goto(`http://localhost:${SITE_PORT}/detour`);
-  await dp.evaluate(() => (window as any).navigator_widget.ask("detour please"));
+  await dp.evaluate(async () => {
+    await (window as any).navigator_widget.load();
+    (window as any).navigator_widget.pick("Appearance");
+  });
   await dp.waitForFunction(
     () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"), null, { timeout: 6000 });
   assert.match((await tipOf(dp)).hint!, /go here first/i, "a detour link should say it is a detour");
@@ -671,16 +548,19 @@ try {
     () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"), null, { timeout: 8000 });
   const after = await tipOf(dp);
   assert.equal(after.step, "Step 1 of 1", "following the detour must not count as doing the step");
-  assert.equal(after.hint, "Open Appearance");
+  assert.match(after.hint!, /Appearance/);
   ok("detour link is labelled as one, and following it resumes the same step");
   await b5.close();
 
-  console.log("\n13. hidden behind a collapsed menu");
-  seed("rail calc", [{ label: "Affordability Index", role: "a", page: "/rail", hint: "Open the Affordability Index" }]);
+  console.log("\n10. hidden behind a collapsed menu");
+  putElements(SITE, [{ page: "/rail", label: "Affordability Index", role: "a", parent: "" }]);
   const b6 = await chromium.launch();
   const rp = await b6.newPage();
   await rp.goto(`http://localhost:${SITE_PORT}/rail`);
-  await rp.evaluate(() => (window as any).navigator_widget.ask("rail calc"));
+  await rp.evaluate(async () => {
+    await (window as any).navigator_widget.load();
+    (window as any).navigator_widget.pick("Affordability Index");
+  });
   await rp.waitForFunction(
     () => document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".ring.on"), null, { timeout: 5000 });
   const railToggle = (await rp.locator("#rt").boundingBox())!;
@@ -692,7 +572,7 @@ try {
   assert.match(t13.hint!, /open this first/i);
   await rp.click("#rt");
   await rp.waitForFunction(
-    () => /Open the Affordability/.test(document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".tip span")!.textContent!),
+    () => /Here it is/.test(document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".tip span")!.textContent!),
     null, { timeout: 5000 });
   const link = (await rp.locator("#rail a").boundingBox())!;
   t13 = await tipOf(rp);
@@ -701,90 +581,11 @@ try {
   ok("off-screen rail: points at its toggle first, then at the link inside");
   await b6.close();
 
-  console.log("\n14. sign-in step, signed-in visitor");
-  // One cached answer serves both: the sign-in step is stripped per visitor.
-  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-    SITE, "signin split", JSON.stringify({
-      answer: "You will need to sign in first, then pick dark mode.",
-      confidence: 0.9,
-      steps: [
-        { label: "Sign in", role: "a", page: "/", hint: "Sign in first" },
-        { label: "Dark mode", role: "button", page: "/", hint: "Click dark mode" },
-      ],
-    }), Date.now());
-  const askAs = async (digest: object[]) =>
-    (await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.7" },
-      body: JSON.stringify({ site: SITE, query: "signin split", url: "/", digest }),
-    })).json()) as any;
-
-  const out14 = await askAs([{ label: "Sign in", role: "a" }, { label: "Dark mode", role: "button" }]);
-  assert.deepEqual(out14.steps.map((s: any) => s.label), ["Sign in", "Dark mode"],
-    "a signed-out visitor still gets the sign-in step");
-  assert.match(out14.answer, /sign in/i);
-
-  const in14 = await askAs([{ label: "Account menu", role: "button" }, { label: "Dark mode", role: "button" }]);
-  assert.deepEqual(in14.steps.map((s: any) => s.label), ["Dark mode"],
-    "a signed-in visitor should not be sent to a sign-in link that isn't there");
-  assert.doesNotMatch(in14.answer, /sign in/i, `answer still says sign in: "${in14.answer}"`);
-
-  // Mid-walkthrough sign-out is a destination, not a leftover instruction.
-  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-    SITE, "logout please", JSON.stringify({
-      answer: "", confidence: 0.9,
-      steps: [
-        { label: "Account menu", role: "button", page: "/", hint: "Open it" },
-        { label: "Log out", role: "button", page: "/", hint: "Log out" },
-      ],
-    }), Date.now());
-  const lo = await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
-    method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.8" },
-    body: JSON.stringify({ site: SITE, query: "logout please", url: "/", digest: [{ label: "Account menu", role: "button" }] }),
-  })).json() as any;
-  assert.equal(lo.steps.length, 2, "a later sign-out step must survive");
-  ok("sign-in step dropped for signed-in visitors, kept for signed-out ones");
-
-  console.log("\n15. reworded questions reuse the cached answer");
-  const seedQ = (q: string, steps: object[]) =>
-    db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-      SITE, q, JSON.stringify({ answer: "cached", confidence: 0.9, steps }), Date.now());
-  seedQ("where is dark mode", [{ label: "Dark mode", role: "switch", page: "/settings", hint: "Toggle it" }]);
-
-  // Its own address: by now the shared one has spent its per-IP allowance in 8.
-  const ask15 = async (query: string) =>
-    (await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.15" },
-      body: JSON.stringify({ site: SITE, query, url: "/" }),
-    })).json()) as any;
-
-  // cached:true is only reachable through the cache, so it proves no model call.
-  const re15 = await ask15("i wanna switch to dark mode");
-  assert.equal(re15.cached, true, `reworded question should reuse the cache: ${JSON.stringify(re15)}`);
-  assert.equal(re15.steps[0].label, "Dark mode");
-
-  // Different question entirely: must not be handed the dark mode answer. With no
-  // model reachable (exhausted quota) an error here is the correct outcome too.
-  const off15 = await ask15("where is the affordability calculator");
-  if (!off15.error)
-    assert(!off15.steps.some((s: any) => /dark mode/i.test(s.label)),
-      `unrelated question reused the dark mode answer: ${JSON.stringify(off15.steps)}`);
-
-  // One kept word apart, opposite meaning: worth a model call rather than a guess.
-  seedQ("where is sign in", [{ label: "Sign in", role: "a", page: "/", hint: "Sign in" }]);
-  const out15 = await ask15("where is sign out");
-  if (!out15.error)
-    assert(!(out15.cached && out15.steps.some((s: any) => /sign in/i.test(s.label))),
-      `"sign out" reused the "sign in" answer: ${JSON.stringify(out15.steps)}`);
-  ok("reworded question served from cache; unrelated and opposite ones were not");
-
-  console.log("\n16. the step's element disappears");
-  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-    SITE, "menu dark", JSON.stringify({ answer: "", confidence: 0.9, steps: [
-      { label: "Account menu", role: "button", page: "/menu", hint: "Open the account menu" },
-      { label: "Dark mode", role: "menuitem", page: "/menu", hint: "Select dark mode" },
-    ] }), Date.now());
+  console.log("\n11. the step's element disappears");
+  putElements(SITE, [
+    { page: "/menu", label: "Account menu", role: "button", parent: "" },
+    { page: "/menu", label: "Dark mode", role: "menuitem", parent: "Account menu" },
+  ]);
 
   // Check 8 spent this address's allowance; the browser can't spoof one.
   const ipLimit = process.env.RATE_IP_PER_MIN;
@@ -793,7 +594,10 @@ try {
   const b7 = await chromium.launch();
   const mp = await b7.newPage();
   await mp.goto(`http://localhost:${SITE_PORT}/menu`);
-  await mp.evaluate(() => (window as any).navigator_widget.ask("menu dark"));
+  await mp.evaluate(async () => {
+    await (window as any).navigator_widget.load();
+    (window as any).navigator_widget.pick("Dark mode");
+  });
   await mp.waitForTimeout(800);
   await mp.click("#mt"); // opens the menu; step 2's item is now on the page
   await mp.waitForTimeout(600);
@@ -817,58 +621,21 @@ try {
   if (ipLimit === undefined) delete process.env.RATE_IP_PER_MIN;
   else process.env.RATE_IP_PER_MIN = ipLimit;
 
-  console.log("\n17. header chrome is wherever the visitor is");
-  // Cached against the one page the crawler opened the menu on.
-  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-    SITE, "chrome dark", JSON.stringify({ answer: "", confidence: 0.9, steps: [
-      { label: "Account menu", role: "button", page: "/future-expense", hint: "Open the account menu" },
-      { label: "Dark mode", role: "menuitem", page: "/future-expense", hint: "Select dark mode" },
-    ] }), Date.now());
-  const ask17 = async (url: string, digest: object[]) =>
-    (await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.17" },
-      body: JSON.stringify({ site: SITE, query: "chrome dark", url, digest }),
-    })).json()) as any;
-
-  // The account menu is on this visitor's screen, so what it opens is here too --
-  // no "go to that page first" detour to the footer.
-  const g17 = await ask17("/calculators", [{ label: "Account menu", role: "button" }]);
-  assert.deepEqual(g17.steps.map((s: any) => s.page), ["/calculators", "/calculators"],
-    `steps should be routed to the visitor's page: ${JSON.stringify(g17.steps)}`);
-
-  // Nothing of the sort on screen: leave the claim alone, the detour is real.
-  const away17 = await ask17("/calculators", [{ label: "Calculate", role: "button" }]);
-  assert.deepEqual(away17.steps.map((s: any) => s.page), ["/future-expense", "/future-expense"],
-    `untouched when the menu isn't here: ${JSON.stringify(away17.steps)}`);
-
-  // A link is how you leave a page, so what follows one is genuinely elsewhere.
-  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-    SITE, "via link", JSON.stringify({ answer: "", confidence: 0.9, steps: [
-      { label: "Settings page", role: "a", page: "/calculators", hint: "Go to settings" },
-      { label: "Late field", role: "input", page: "/settings", hint: "Fill it in" },
-    ] }), Date.now());
-  const l17 = await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
-    method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.18" },
-    body: JSON.stringify({ site: SITE, query: "via link", url: "/calculators",
-      digest: [{ label: "Settings page", role: "a" }] }),
-  })).json() as any;
-  assert.equal(l17.steps[1].page, "/settings", `a step after a link must stay on its own page: ${JSON.stringify(l17.steps)}`);
-  ok("steps behind on-screen chrome follow the visitor; steps behind a link don't");
-
-  console.log("\n18. the opener is the step before it");
-  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-    SITE, "popup dark", JSON.stringify({ answer: "", confidence: 0.9, steps: [
-      { label: "Account menu", role: "button", page: "/popup", hint: "Open the account menu" },
-      { label: "Dark mode", role: "menuitem", page: "/popup", hint: "Select dark mode" },
-    ] }), Date.now());
+  console.log("\n12. the opener is the step before it");
+  putElements(SITE, [
+    { page: "/popup", label: "Account menu", role: "button", parent: "" },
+    { page: "/popup", label: "Dark mode", role: "menuitem", parent: "Account menu" },
+  ]);
 
   const ipLimit18 = process.env.RATE_IP_PER_MIN;
   process.env.RATE_IP_PER_MIN = "1000";
   const b8 = await chromium.launch();
   const pp = await b8.newPage();
   await pp.goto(`http://localhost:${SITE_PORT}/popup`);
-  await pp.evaluate(() => (window as any).navigator_widget.ask("popup dark"));
+  await pp.evaluate(async () => {
+    await (window as any).navigator_widget.load();
+    (window as any).navigator_widget.pick("Dark mode");
+  });
   await pp.waitForTimeout(700);
   await pp.click("#pt");            // step 1: opens the menu
   await pp.waitForTimeout(500);
@@ -886,42 +653,12 @@ try {
   // And opening it again resumes the real step.
   await pp.click("#pt");
   await pp.waitForFunction(
-    () => /select dark mode/i.test(document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".tip span")!.textContent!),
+    () => /here it is/i.test(document.querySelector("#wnav-host")!.shadowRoot!.querySelector(".tip span")!.textContent!),
     null, { timeout: 5000 });
   ok("no aria-controls: points back at the menu, then at the item once it is open");
   await b8.close();
   if (ipLimit18 === undefined) delete process.env.RATE_IP_PER_MIN;
   else process.env.RATE_IP_PER_MIN = ipLimit18;
-
-  console.log("\n19. the route to sign-in goes too, not just the sign-in step");
-  // Exactly what production cached: the accordion is only there because that copy
-  // of "Sign in" lives inside it.
-  db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-    SITE, "buried signin", JSON.stringify({
-      answer: "You will need to sign in to access Dark mode from the Account menu.",
-      confidence: 1,
-      steps: [
-        { label: "YOUR SAVED CALCULATIONS", role: "summary", page: "/", hint: "Open it" },
-        { label: "Sign in", role: "a", page: "/", hint: "Sign in" },
-        { label: "Account menu", role: "button", page: "/", hint: "Open the account menu" },
-        { label: "Dark mode", role: "menuitem", page: "/", hint: "Toggle dark mode" },
-      ],
-    }), Date.now());
-  const ask19 = async (digest: object[]) =>
-    (await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.19" },
-      body: JSON.stringify({ site: SITE, query: "buried signin", url: "/", digest }),
-    })).json()) as any;
-
-  const in19 = await ask19([{ label: "Account menu", role: "button" }]);
-  assert.deepEqual(in19.steps.map((s: any) => s.label), ["Account menu", "Dark mode"],
-    `signed-in visitor should skip the whole sign-in detour: ${JSON.stringify(in19.steps)}`);
-  assert.doesNotMatch(in19.answer, /sign in/i);
-
-  const out19 = await ask19([{ label: "Sign in", role: "a" }]);
-  assert.equal(out19.steps.length, 4, "a signed-out visitor still needs the whole route");
-  ok("signed in: the accordion and the sign-in step both go; signed out: kept");
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {

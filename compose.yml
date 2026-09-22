@@ -4,7 +4,7 @@
 #
 #   docker compose up -d --build
 #
-# Reads .env next to this file (never committed): LLM_API_KEY, NAV_ADMIN_KEY,
+# Reads .env next to this file (never committed): NAV_ADMIN_KEY,
 # ALLOWED_ORIGINS, and NAV_DOMAIN -- the hostname pointing at this machine.
 services:
   app:

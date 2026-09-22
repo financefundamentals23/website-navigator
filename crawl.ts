@@ -1,6 +1,6 @@
 // Builds the site index: every interactive element, which page it lives on, and
-// which menu it hides behind. This is what lets a single query-time model call
-// answer "where is dark mode" without walking the user through the site first.
+// which menu it hides behind. That chain is what turns one pick in the widget's
+// list into the clicks that reveal it.
 import { readFileSync } from "node:fs";
 import { chromium, type Page } from "playwright";
 import { clearSite, putElements, type El } from "./db.ts";
@@ -72,6 +72,9 @@ function extract() {
   const out: { label: string; role: string }[] = [];
   for (const el of S.all()) {
     if (!S.isVisible(el)) continue;
+    // The widget is on the page while we crawl it; indexing our own launcher put
+    // "Help - find anything on this page" in the list visitors pick from.
+    if (el.closest?.("#wnav-host") || el.getRootNode?.()?.host?.id === "wnav-host") continue;
     const label = S.nameOf(el);
     if (!label) continue;
     out.push({ label, role: S.roleOf(el) });
@@ -284,7 +287,7 @@ export async function crawl(site: string, startUrl: string, opts: CrawlOpts = {}
      * signed out -- the sign-in link itself, for a start. Signed out only can't
      * see the account area at all, which is how a real site got told it "does
      * not have" a setting that sits on its profile page. Rows that appear only
-     * in the signed-in pass are marked, so the guide can say "sign in first". */
+     * in the signed-in pass are marked, so they can be told apart later. */
     const inn = await walk(startUrl, { maxPages, headless, allowed, storageState });
     const key = (e: El) => `${e.page}|${e.label}|${e.parent}`;
     const seenOut = new Set(all.map(key));

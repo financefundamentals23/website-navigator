@@ -11,13 +11,6 @@ db.exec(`
     parent TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (site, page, label, parent)
   );
-  CREATE TABLE IF NOT EXISTS answers (
-    site TEXT NOT NULL,
-    q TEXT NOT NULL,
-    json TEXT NOT NULL,
-    created INTEGER NOT NULL,
-    PRIMARY KEY (site, q)
-  );
 `);
 
 // Added after the first release; existing databases get it on startup.

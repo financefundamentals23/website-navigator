@@ -80,7 +80,6 @@ nano .env
 `.env` on the VM:
 
 ```
-LLM_API_KEY=<AI Studio key>
 NAV_ADMIN_KEY=<long random string>
 ALLOWED_ORIGINS=finance-calculator-tools=https://financefundamentals.app https://www.financefundamentals.app
 NAV_DOMAIN=nav.financefundamentals.app
