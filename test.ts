@@ -110,7 +110,7 @@ const ok = (s: string) => console.log(`  \x1b[32mok\x1b[0m ${s}`);
 
 // Lets check 8 give each simulated visitor its own address.
 process.env.TRUST_PROXY = "1";
-const { server: navServer } = await import("./server.ts");
+const { server: navServer, cacheKey } = await import("./server.ts");
 
 await new Promise<void>((r) => siteServer.listen(SITE_PORT, r));
 await new Promise<void>((r) => navServer.listen(NAV_PORT, r));
@@ -138,7 +138,7 @@ try {
     stubbed = true;
     db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
       SITE,
-      "where is dark mode",
+      cacheKey("where is dark mode?"),
       JSON.stringify({
         answer: "Dark mode is under Settings -> Appearance.",
         confidence: 0.9,
@@ -606,7 +606,7 @@ try {
   console.log("\n12. late-rendering targets and detours");
   const seed = (q: string, steps: object[]) =>
     db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
-      SITE, q, JSON.stringify({ answer: "", confidence: 0.9, steps }), Date.now());
+      SITE, cacheKey(q), JSON.stringify({ answer: "", confidence: 0.9, steps }), Date.now());
   // Both claim another page, exactly as the server did for "Liquid savings (S)".
   seed("late field", [{ label: "Late field", role: "input", page: "/settings", hint: "Fill it in" }]);
   seed("detour please", [{ label: "Appearance", role: "summary", page: "/settings", hint: "Open Appearance" }]);
