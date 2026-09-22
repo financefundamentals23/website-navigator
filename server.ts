@@ -188,6 +188,51 @@ Rules:
 const norm = (q: string) =>
   q.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
 
+/* "where is dark mode" and "i wanna switch to dark mode" want the same control,
+ * but the cache keys on the exact wording, so the second one pays for a model
+ * call -- and the whole site index rides along in every prompt. Compare what is
+ * left after the filler instead. "switch", "toggle", "change" and "open" stay:
+ * on a site of toggles they are the noun, not padding. */
+const STOP = new Set(
+  ("where is are the a an i my me to in on at of for how do does can find want " +
+   "wanna need please show go get take put").split(" "),
+);
+const keywords = (q: string) =>
+  new Set(norm(q).split(" ").filter((w) => w.length > 2 && !STOP.has(w)));
+
+// Dice coefficient: shared words against total size, so one extra word in a
+// two-word question doesn't sink the match.
+function similarity(a: Set<string>, b: Set<string>) {
+  if (!a.size || !b.size) return 0;
+  let shared = 0;
+  for (const w of a) if (b.has(w)) shared++;
+  return (2 * shared) / (a.size + b.size);
+}
+
+/* 0.75 keeps the near-misses apart that matter: "sign in" vs "sign out" scores
+ * 0.67 and still costs a model call, which is the right way round. */
+const MATCH_MIN = 0.75;
+
+function nearest(site: string, query: string) {
+  const want = keywords(query);
+  if (!want.size) return null;
+  const rows = db
+    .prepare(`SELECT q, json FROM answers WHERE site = ? ORDER BY created DESC LIMIT 500`)
+    .all(site) as { q: string; json: string }[];
+  let best: { q: string; json: string } | null = null;
+  let bestScore = MATCH_MIN;
+  for (const r of rows) {
+    const score = similarity(want, keywords(r.q));
+    if (score > bestScore) {
+      bestScore = score;
+      best = r;
+    }
+  }
+  // Logged, not guessed at twice: real traffic is what says whether 0.75 holds.
+  if (best) console.log(`[guide] "${query}" reused "${best.q}" (${bestScore.toFixed(2)})`);
+  return best;
+}
+
 const MAX_ROWS = 600;
 
 /* On a big site the index is most of the prompt, and free tiers meter tokens per
@@ -290,6 +335,10 @@ async function guide(body: any) {
     // Cached by question, not by page: the answer is a path through the site, and
     // "where is dark mode" gets asked far more often than the site changes.
     if (hit) return { ...forVisitor(JSON.parse(hit.json), live), cached: true };
+    // Same question, different words. Costs a scan of this site's rows; the
+    // alternative is the whole site index through the model again.
+    const near = nearest(site, query);
+    if (near) return { ...forVisitor(JSON.parse(near.json), live), cached: true };
   }
 
   const here = String(body.url ?? "/");

@@ -252,7 +252,9 @@ try {
   await new Promise<void>((r) => fake.listen(8797, r));
   process.env.LLM_BASE_URL = "http://localhost:8797";
 
-  const bad = await post("/guide", { site: SITE, query: "beam me to dark mode", url: "/" });
+  // noCache: this exercises the model path, and "beam me to dark mode" is close
+  // enough to the cached "where is dark mode" that the near-match would serve it.
+  const bad = await post("/guide", { site: SITE, query: "beam me to dark mode", url: "/", noCache: true });
   fake.close();
   delete process.env.LLM_BASE_URL;
 
@@ -290,7 +292,8 @@ try {
   await new Promise<void>((r) => lazy.listen(8796, r));
   process.env.LLM_BASE_URL = "http://localhost:8796";
 
-  const chained = await post("/guide", { site: SITE, query: "dark mode please", url: "/settings" });
+  // noCache for the same reason as 5: this one is about what the model returns.
+  const chained = await post("/guide", { site: SITE, query: "dark mode please", url: "/settings", noCache: true });
   lazy.close();
   delete process.env.LLM_BASE_URL;
 
@@ -721,6 +724,40 @@ try {
   })).json() as any;
   assert.equal(lo.steps.length, 2, "a later sign-out step must survive");
   ok("sign-in step dropped for signed-in visitors, kept for signed-out ones");
+
+  console.log("\n15. reworded questions reuse the cached answer");
+  const seedQ = (q: string, steps: object[]) =>
+    db.prepare(`INSERT OR REPLACE INTO answers (site, q, json, created) VALUES (?, ?, ?, ?)`).run(
+      SITE, q, JSON.stringify({ answer: "cached", confidence: 0.9, steps }), Date.now());
+  seedQ("where is dark mode", [{ label: "Dark mode", role: "switch", page: "/settings", hint: "Toggle it" }]);
+
+  // Its own address: by now the shared one has spent its per-IP allowance in 8.
+  const ask15 = async (query: string) =>
+    (await (await fetch(`http://localhost:${NAV_PORT}/guide`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-forwarded-for": "198.51.100.15" },
+      body: JSON.stringify({ site: SITE, query, url: "/" }),
+    })).json()) as any;
+
+  // cached:true is only reachable through the cache, so it proves no model call.
+  const re15 = await ask15("i wanna switch to dark mode");
+  assert.equal(re15.cached, true, `reworded question should reuse the cache: ${JSON.stringify(re15)}`);
+  assert.equal(re15.steps[0].label, "Dark mode");
+
+  // Different question entirely: must not be handed the dark mode answer. With no
+  // model reachable (exhausted quota) an error here is the correct outcome too.
+  const off15 = await ask15("where is the affordability calculator");
+  if (!off15.error)
+    assert(!off15.steps.some((s: any) => /dark mode/i.test(s.label)),
+      `unrelated question reused the dark mode answer: ${JSON.stringify(off15.steps)}`);
+
+  // One kept word apart, opposite meaning: worth a model call rather than a guess.
+  seedQ("where is sign in", [{ label: "Sign in", role: "a", page: "/", hint: "Sign in" }]);
+  const out15 = await ask15("where is sign out");
+  if (!out15.error)
+    assert(!(out15.cached && out15.steps.some((s: any) => /sign in/i.test(s.label))),
+      `"sign out" reused the "sign in" answer: ${JSON.stringify(out15.steps)}`);
+  ok("reworded question served from cache; unrelated and opposite ones were not");
 
   console.log("\n\x1b[32mall passed\x1b[0m\n");
 } finally {
