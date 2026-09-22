@@ -24,6 +24,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      # No model key here on purpose: the suite stubs the model when it can't
+      # reach one, so CI checks everything else without spending quota.
       - run: npm test
       - run: npm run coverage
 
